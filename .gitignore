@@ -1,0 +1,11 @@
+# Build artifacts
+target/
+
+# Secrets
+config.yaml
+
+# Data files
+data/
+*.h5
+*.csv
+*.db

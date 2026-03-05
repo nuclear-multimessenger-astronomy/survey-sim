@@ -1,0 +1,15 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "survey-sim"
+version = "0.1.0"
+description = "Survey simulation framework for transient astronomy"
+requires-python = ">=3.9"
+dependencies = ["numpy"]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "survey_sim.survey_sim"
+python-source = "."

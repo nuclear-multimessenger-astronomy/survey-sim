@@ -1,0 +1,71 @@
+name: Rubin LSST
+description: Vera C. Rubin Observatory Legacy Survey of Space and Time
+
+telescope:
+  aperture_m: 6.423
+  location: ground
+  latitude_deg: -30.2446
+  longitude_deg: -70.7494
+  altitude_m: 2663
+
+detector:
+  plate_scale_arcsec: 0.2
+  read_noise_e: 8.8
+  dark_current_e_per_s: 0.2
+  gain: 1.0
+  fov_deg2: 9.6
+
+bands:
+  u:
+    central_wavelength_nm: 367
+    width_nm: 52
+    typical_seeing_arcsec: 0.92
+    single_visit_depth: 23.9
+    sky_brightness: 22.95
+  g:
+    central_wavelength_nm: 482
+    width_nm: 140
+    typical_seeing_arcsec: 0.87
+    single_visit_depth: 25.0
+    sky_brightness: 22.24
+  r:
+    central_wavelength_nm: 622
+    width_nm: 135
+    typical_seeing_arcsec: 0.83
+    single_visit_depth: 24.7
+    sky_brightness: 21.20
+  i:
+    central_wavelength_nm: 754
+    width_nm: 125
+    typical_seeing_arcsec: 0.80
+    single_visit_depth: 24.0
+    sky_brightness: 20.47
+  z:
+    central_wavelength_nm: 869
+    width_nm: 100
+    typical_seeing_arcsec: 0.78
+    single_visit_depth: 23.3
+    sky_brightness: 19.60
+  y:
+    central_wavelength_nm: 971
+    width_nm: 100
+    typical_seeing_arcsec: 0.76
+    single_visit_depth: 22.1
+    sky_brightness: 18.61
+
+observing:
+  default_exposure_s: 30.0
+  readout_s: 2.0
+  slew_rate_deg_per_s: 1.5
+  settle_s: 1.0
+  min_altitude_deg: 20.0
+  max_airmass: 2.5
+  min_moon_sep_deg: 30.0
+
+extinction_coefficients:
+  u: 1.56
+  g: 1.31
+  r: 1.00
+  i: 0.75
+  z: 0.55
+  y: 0.47

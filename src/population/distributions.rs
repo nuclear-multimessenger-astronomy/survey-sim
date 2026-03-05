@@ -1,0 +1,115 @@
+use rand::Rng;
+
+use crate::types::Cosmology;
+
+/// Sample a redshift from the volumetric rate distribution dN/dz ~ dV/dz.
+///
+/// Uses rejection sampling with dV/dz as the weight.
+pub fn sample_redshift_volumetric(
+    z_max: f64,
+    cosmo: &Cosmology,
+    rng: &mut (impl Rng + ?Sized),
+) -> f64 {
+    // Pre-compute maximum dV/dz for rejection sampling.
+    // dV/dz peaks near z_max for typical z_max < 2.
+    let n_probe = 100;
+    let mut max_dvdz: f64 = 0.0;
+    for i in 0..=n_probe {
+        let z = z_max * i as f64 / n_probe as f64;
+        let dvdz = cosmo.dv_dz(z);
+        if dvdz > max_dvdz {
+            max_dvdz = dvdz;
+        }
+    }
+
+    loop {
+        let z: f64 = rng.random::<f64>() * z_max;
+        let dvdz = cosmo.dv_dz(z);
+        let accept_prob = dvdz / max_dvdz;
+        if rng.random::<f64>() < accept_prob {
+            return z;
+        }
+    }
+}
+
+/// Sample an isotropic sky position (uniform on the sphere).
+pub fn sample_isotropic_sky(rng: &mut (impl Rng + ?Sized)) -> (f64, f64) {
+    let ra = rng.random::<f64>() * 360.0;
+    // Uniform in sin(dec) for isotropic distribution.
+    let sin_dec = rng.random::<f64>() * 2.0 - 1.0;
+    let dec = sin_dec.asin().to_degrees();
+    (ra, dec)
+}
+
+/// Sample an explosion time uniformly within an MJD range.
+pub fn sample_explosion_time(mjd_min: f64, mjd_max: f64, rng: &mut (impl Rng + ?Sized)) -> f64 {
+    mjd_min + rng.random::<f64>() * (mjd_max - mjd_min)
+}
+
+/// Sample from a log-uniform distribution in [lo, hi].
+pub fn sample_log_uniform(lo: f64, hi: f64, rng: &mut (impl Rng + ?Sized)) -> f64 {
+    let log_lo = lo.ln();
+    let log_hi = hi.ln();
+    (log_lo + rng.random::<f64>() * (log_hi - log_lo)).exp()
+}
+
+/// Sample from a Gaussian distribution clamped to [lo, hi].
+pub fn sample_gaussian_clamped(
+    mean: f64,
+    std: f64,
+    lo: f64,
+    hi: f64,
+    rng: &mut (impl Rng + ?Sized),
+) -> f64 {
+    use rand_distr::{Distribution, Normal};
+    let normal = Normal::new(mean, std).unwrap();
+    loop {
+        let x = normal.sample(rng);
+        if x >= lo && x <= hi {
+            return x;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::SeedableRng;
+
+    #[test]
+    fn test_volumetric_redshift_distribution() {
+        let cosmo = Cosmology::default();
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(42);
+        let n = 10_000;
+        let z_max = 0.3;
+
+        let samples: Vec<f64> = (0..n)
+            .map(|_| sample_redshift_volumetric(z_max, &cosmo, &mut rng))
+            .collect();
+
+        // All samples should be in [0, z_max].
+        assert!(samples.iter().all(|&z| z >= 0.0 && z <= z_max));
+
+        // Mean should be skewed toward higher z (dV/dz increases with z).
+        let mean: f64 = samples.iter().sum::<f64>() / n as f64;
+        assert!(mean > z_max * 0.4, "Mean redshift should be skewed high");
+    }
+
+    #[test]
+    fn test_isotropic_sky() {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(42);
+        let n = 10_000;
+        let samples: Vec<(f64, f64)> =
+            (0..n).map(|_| sample_isotropic_sky(&mut rng)).collect();
+
+        // RA in [0, 360], Dec in [-90, 90].
+        assert!(samples.iter().all(|&(ra, dec)| ra >= 0.0
+            && ra <= 360.0
+            && dec >= -90.0
+            && dec <= 90.0));
+
+        // Mean dec should be ~0 for isotropic.
+        let mean_dec: f64 = samples.iter().map(|&(_, dec)| dec).sum::<f64>() / n as f64;
+        assert!(mean_dec.abs() < 3.0);
+    }
+}

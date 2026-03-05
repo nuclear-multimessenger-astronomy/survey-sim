@@ -1,0 +1,19 @@
+# Default configuration for survey-sim data scripts.
+# Copy to config.yaml and fill in credentials before use.
+
+irsa:
+  tap_url: "https://irsa.ipac.caltech.edu/TAP"
+
+depot:
+  url: "https://ztfweb.ipac.caltech.edu/ztf/depot"
+  username: ""
+  password: ""
+
+boom:
+  url: "https://api.kaboom.caltech.edu"
+  username: ""
+  password: ""
+
+rubin:
+  opsim_url: "https://s3df.slac.stanford.edu/data/rubin/sim-data/sims_featureScheduler_runs5.1/baseline/baseline_v5.1.1_10yrs.db"
+  data_dir: "data/rubin"
