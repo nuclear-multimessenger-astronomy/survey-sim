@@ -102,3 +102,79 @@ class FiestaKNModel:
                 result_mags[band] = [99.0] * len(obs_times_mjd)
 
         return (obs_times_mjd.tolist(), result_mags)
+
+    def batch_predict(self, params_list, chunk_size=2048):
+        """Batch evaluate multiple transients using JAX vmap on GPU.
+
+        Parameters
+        ----------
+        params_list : list[dict]
+            Each dict has Bu2026 physical parameters, ``luminosity_distance``,
+            ``redshift``, and observation context keys (``_obs_times_mjd``,
+            ``_obs_bands``, ``_t_exp``).
+        chunk_size : int
+            Maximum number of transients per GPU vmap call, to avoid OOM.
+            Default 2048 fits comfortably in ~10 GB GPU memory.
+
+        Returns
+        -------
+        list[tuple]
+            List of ``(times_mjd, {band: mags})`` tuples, one per transient.
+        """
+        if not params_list:
+            return []
+
+        results = []
+        for start in range(0, len(params_list), chunk_size):
+            chunk = params_list[start : start + chunk_size]
+            chunk_results = self._vpredict_chunk(chunk)
+            results.extend(chunk_results)
+
+        return results
+
+    def _vpredict_chunk(self, params_list):
+        """Evaluate a single chunk via vpredict."""
+        param_names = list(self.model.parameter_names)
+        X = {}
+        for name in param_names:
+            X[name] = jnp.array([float(p[name]) for p in params_list], dtype=jnp.float32)
+        X["luminosity_distance"] = jnp.array(
+            [float(p["luminosity_distance"]) for p in params_list], dtype=jnp.float32
+        )
+        X["redshift"] = jnp.array(
+            [float(p["redshift"]) for p in params_list], dtype=jnp.float32
+        )
+
+        # GPU call via JAX vmap
+        model_times_batch, model_mags_batch = self.model.vpredict(X)
+
+        # Convert to numpy for interpolation
+        model_times_batch = np.asarray(model_times_batch)  # (N, T)
+        model_mags_np = {k: np.asarray(v) for k, v in model_mags_batch.items()}
+
+        # Interpolate each transient to its observation times
+        results = []
+        for i, params in enumerate(params_list):
+            obs_times_mjd = np.asarray(params["_obs_times_mjd"], dtype=np.float64)
+            t_exp = float(params["_t_exp"])
+            redshift = float(params["redshift"])
+            obs_rest_days = (obs_times_mjd - t_exp) / (1.0 + redshift)
+
+            grid_times = model_times_batch[i]
+
+            result_mags = {}
+            for fiesta_filt, short_band in _FIESTA_TO_BAND.items():
+                if fiesta_filt not in model_mags_np:
+                    continue
+                grid_mags = model_mags_np[fiesta_filt][i]
+                interp_all = np.interp(obs_rest_days, grid_times, grid_mags)
+                result_mags[short_band] = interp_all.tolist()
+
+            unique_bands = set(params["_obs_bands"])
+            for band in unique_bands:
+                if band not in result_mags:
+                    result_mags[band] = [99.0] * len(obs_times_mjd)
+
+            results.append((obs_times_mjd.tolist(), result_mags))
+
+        return results

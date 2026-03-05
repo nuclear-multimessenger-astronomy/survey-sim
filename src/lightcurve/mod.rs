@@ -46,4 +46,28 @@ pub trait LightcurveModel: Send + Sync {
     fn requires_gil(&self) -> bool {
         false
     }
+
+    /// Whether this model supports batch evaluation (e.g., GPU-vectorized via JAX vmap).
+    fn supports_batch(&self) -> bool {
+        false
+    }
+
+    /// Evaluate multiple transients in a single batch call.
+    ///
+    /// Default implementation falls back to sequential `evaluate()` calls.
+    /// Models that support GPU batching (e.g., fiestaEM with JAX vmap) should
+    /// override this for dramatically better throughput.
+    fn batch_evaluate(
+        &self,
+        instances: &[&TransientInstance],
+        times_mjd: &[&[f64]],
+        bands: &[&[Band]],
+    ) -> Vec<Result<LightcurveEvaluation>> {
+        instances
+            .iter()
+            .zip(times_mjd.iter())
+            .zip(bands.iter())
+            .map(|((inst, t), b)| self.evaluate(inst, t, b))
+            .collect()
+    }
 }

@@ -34,13 +34,19 @@ impl PyMetzgerKNModel {
 /// Python callback lightcurve model wrapping a Python object with .predict().
 ///
 /// Designed for fiestaEM SurrogateModel integration.
+/// If the Python object has a `batch_predict` method, batch evaluation
+/// via GPU (e.g., JAX vmap) is automatically enabled.
 pub struct PythonCallbackModel {
     callback: PyObject,
+    has_batch: bool,
 }
 
 impl PythonCallbackModel {
     pub fn new(callback: PyObject) -> Self {
-        Self { callback }
+        let has_batch = Python::with_gil(|py| {
+            callback.getattr(py, "batch_predict").is_ok()
+        });
+        Self { callback, has_batch }
     }
 }
 
@@ -122,6 +128,104 @@ impl LightcurveModel for PythonCallbackModel {
 
     fn requires_gil(&self) -> bool {
         true
+    }
+
+    fn supports_batch(&self) -> bool {
+        self.has_batch
+    }
+
+    fn batch_evaluate(
+        &self,
+        instances: &[&TransientInstance],
+        times_mjd: &[&[f64]],
+        bands: &[&[Band]],
+    ) -> Vec<survey_sim::lightcurve::Result<LightcurveEvaluation>> {
+        if !self.has_batch {
+            // Fall back to sequential
+            return instances
+                .iter()
+                .zip(times_mjd.iter())
+                .zip(bands.iter())
+                .map(|((inst, t), b)| self.evaluate(inst, t, b))
+                .collect();
+        }
+
+        Python::with_gil(|py| {
+            // Build a list of param dicts for batch_predict
+            let params_list = pyo3::types::PyList::empty(py);
+            for (i, inst) in instances.iter().enumerate() {
+                let params_dict = pyo3::types::PyDict::new(py);
+                for (key, val) in &inst.model_params {
+                    let _ = params_dict.set_item(key, val);
+                }
+                let _ = params_dict.set_item("luminosity_distance", inst.d_l);
+                let _ = params_dict.set_item("redshift", inst.z);
+                let obs_times: Vec<f64> = times_mjd[i].to_vec();
+                let obs_bands: Vec<String> = bands[i].iter().map(|b| b.to_string()).collect();
+                let _ = params_dict.set_item("_obs_times_mjd", obs_times);
+                let _ = params_dict.set_item("_obs_bands", obs_bands);
+                let _ = params_dict.set_item("_t_exp", inst.t_exp);
+                let _ = params_list.append(params_dict);
+            }
+
+            // Call model.batch_predict(params_list)
+            let result = match self
+                .callback
+                .call_method1(py, "batch_predict", (params_list,))
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let msg = format!("batch_predict failed: {}", e);
+                    return (0..instances.len())
+                        .map(|_| Err(LightcurveError::PythonError(msg.clone())))
+                        .collect();
+                }
+            };
+
+            // Result is a list of (times, {band: mags}) tuples
+            let py_list = match result.downcast_bound::<pyo3::types::PyList>(py) {
+                Ok(l) => l,
+                Err(e) => {
+                    let msg = format!("Expected list: {}", e);
+                    return (0..instances.len())
+                        .map(|_| Err(LightcurveError::PythonError(msg.clone())))
+                        .collect();
+                }
+            };
+
+            py_list
+                .iter()
+                .map(|item| {
+                    let tuple = item
+                        .downcast::<pyo3::types::PyTuple>()
+                        .map_err(|e| LightcurveError::PythonError(format!("Expected tuple: {}", e)))?;
+                    let py_times: Vec<f64> = tuple
+                        .get_item(0)
+                        .map_err(|e| LightcurveError::PythonError(e.to_string()))?
+                        .extract()
+                        .map_err(|e| LightcurveError::PythonError(e.to_string()))?;
+                    let py_mags_dict = tuple
+                        .get_item(1)
+                        .map_err(|e| LightcurveError::PythonError(e.to_string()))?;
+                    let py_mags_dict = py_mags_dict
+                        .downcast::<pyo3::types::PyDict>()
+                        .map_err(|e| LightcurveError::PythonError(format!("Expected dict: {}", e)))?;
+
+                    let mut mags_per_band = HashMap::new();
+                    for (key, val) in py_mags_dict.iter() {
+                        let band_name: String = key
+                            .extract()
+                            .map_err(|e| LightcurveError::PythonError(e.to_string()))?;
+                        let mags: Vec<f64> = val
+                            .extract()
+                            .map_err(|e| LightcurveError::PythonError(e.to_string()))?;
+                        mags_per_band.insert(band_name, mags);
+                    }
+
+                    Ok(python_result_to_evaluation(py_times, mags_per_band))
+                })
+                .collect()
+        })
     }
 }
 

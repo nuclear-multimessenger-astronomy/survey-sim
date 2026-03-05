@@ -157,6 +157,8 @@ impl PopulationGenerator for Bu2026KilonovaPopulation {
 /// Bu2026 kilonova population with fixed physical parameters.
 ///
 /// Only redshift, sky position, explosion time, and extinction are randomized.
+/// If `vary_inclination` is true, inclination is drawn as uniform in cos(iota)
+/// instead of using the fixed value.
 pub struct FixedBu2026KilonovaPopulation {
     pub rate: f64,
     pub z_max: f64,
@@ -171,6 +173,7 @@ pub struct FixedBu2026KilonovaPopulation {
     pub v_ej_wind: f64,
     pub ye_wind: f64,
     pub inclination_em: f64,
+    pub vary_inclination: bool,
 }
 
 impl FixedBu2026KilonovaPopulation {
@@ -187,18 +190,28 @@ impl FixedBu2026KilonovaPopulation {
             log10_mej_dyn, v_ej_dyn, ye_dyn,
             log10_mej_wind, v_ej_wind, ye_wind,
             inclination_em,
+            vary_inclination: false,
         }
     }
 }
 
 impl PopulationGenerator for FixedBu2026KilonovaPopulation {
     fn generate(&self, n: usize, rng: &mut dyn rand::RngCore) -> Vec<TransientInstance> {
+        use rand::Rng;
+
         let mut instances = Vec::with_capacity(n);
         for _ in 0..n {
             let z = sample_redshift_volumetric(self.z_max, &self.cosmology, rng);
             let d_l = self.cosmology.luminosity_distance(z);
             let (ra, dec) = sample_isotropic_sky(rng);
             let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
+
+            // If vary_inclination, draw uniform in cos(iota): iota = arccos(U(0,1)).
+            let inclination = if self.vary_inclination {
+                rng.random::<f64>().acos()
+            } else {
+                self.inclination_em
+            };
 
             let mut params = HashMap::new();
             params.insert("log10_mej_dyn".to_string(), self.log10_mej_dyn);
@@ -207,7 +220,7 @@ impl PopulationGenerator for FixedBu2026KilonovaPopulation {
             params.insert("log10_mej_wind".to_string(), self.log10_mej_wind);
             params.insert("v_ej_wind".to_string(), self.v_ej_wind);
             params.insert("Ye_wind".to_string(), self.ye_wind);
-            params.insert("inclination_EM".to_string(), self.inclination_em);
+            params.insert("inclination_EM".to_string(), inclination);
 
             instances.push(TransientInstance {
                 coord: SkyCoord::new(ra, dec),

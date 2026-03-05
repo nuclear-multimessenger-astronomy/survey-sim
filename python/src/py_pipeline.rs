@@ -194,7 +194,32 @@ fn run_pipeline_borrowed(
 
         // Phase 2: Lightcurve evaluation.
         let evaluations: Vec<(usize, Vec<usize>, survey_sim::lightcurve::LightcurveEvaluation)> =
-            if model.requires_gil() {
+            if model.supports_batch() {
+                // GPU-batched path: collect all instances, evaluate in one call.
+                let batch_instances: Vec<&survey_sim::types::TransientInstance> =
+                    matched.iter().map(|(idx, _)| &instances[*idx]).collect();
+                let batch_times: Vec<Vec<f64>> = matched
+                    .iter()
+                    .map(|(_, obs_indices)| obs_indices.iter().map(|&oi| survey.get(oi).mjd).collect())
+                    .collect();
+                let batch_bands: Vec<Vec<survey_sim::types::Band>> = matched
+                    .iter()
+                    .map(|(_, obs_indices)| obs_indices.iter().map(|&oi| survey.get(oi).band.clone()).collect())
+                    .collect();
+                let times_refs: Vec<&[f64]> = batch_times.iter().map(|t| t.as_slice()).collect();
+                let bands_refs: Vec<&[survey_sim::types::Band]> = batch_bands.iter().map(|b| b.as_slice()).collect();
+
+                let results = model.batch_evaluate(&batch_instances, &times_refs, &bands_refs);
+
+                matched
+                    .iter()
+                    .zip(results.into_iter())
+                    .filter_map(|((idx, obs_indices), result)| {
+                        result.ok().map(|eval| (*idx, obs_indices.clone(), eval))
+                    })
+                    .collect()
+            } else if model.requires_gil() {
+                // Sequential GIL path: one transient at a time.
                 matched
                     .iter()
                     .filter_map(|(idx, obs_indices)| {
@@ -207,6 +232,7 @@ fn run_pipeline_borrowed(
                     })
                     .collect()
             } else {
+                // Rayon-parallel path for pure Rust models.
                 matched
                     .par_iter()
                     .filter_map(|(idx, obs_indices)| {

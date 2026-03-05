@@ -69,6 +69,7 @@ pub struct PyFixedBu2026KilonovaPopulation {
     pub(crate) v_ej_wind: f64,
     pub(crate) ye_wind: f64,
     pub(crate) inclination_em: f64,
+    pub(crate) vary_inclination: bool,
 }
 
 #[pymethods]
@@ -77,32 +78,37 @@ impl PyFixedBu2026KilonovaPopulation {
     #[pyo3(signature = (
         log10_mej_dyn, v_ej_dyn, ye_dyn,
         log10_mej_wind, v_ej_wind, ye_wind,
-        inclination_em,
+        inclination_em=0.0,
         rate=1000.0, z_max=0.3,
+        vary_inclination=false,
     ))]
     fn new(
         log10_mej_dyn: f64, v_ej_dyn: f64, ye_dyn: f64,
         log10_mej_wind: f64, v_ej_wind: f64, ye_wind: f64,
         inclination_em: f64,
         rate: f64, z_max: f64,
+        vary_inclination: bool,
     ) -> Self {
         Self {
             rate, z_max,
             log10_mej_dyn, v_ej_dyn, ye_dyn,
             log10_mej_wind, v_ej_wind, ye_wind,
             inclination_em,
+            vary_inclination,
         }
     }
 }
 
 impl PyFixedBu2026KilonovaPopulation {
     pub fn to_generator(&self, mjd_min: f64, mjd_max: f64) -> FixedBu2026KilonovaPopulation {
-        FixedBu2026KilonovaPopulation::new(
+        let mut pop = FixedBu2026KilonovaPopulation::new(
             self.rate, self.z_max, mjd_min, mjd_max,
             self.log10_mej_dyn, self.v_ej_dyn, self.ye_dyn,
             self.log10_mej_wind, self.v_ej_wind, self.ye_wind,
             self.inclination_em,
-        )
+        );
+        pop.vary_inclination = self.vary_inclination;
+        pop
     }
 }
 
