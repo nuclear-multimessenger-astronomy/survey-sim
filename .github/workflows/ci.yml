@@ -59,11 +59,18 @@ jobs:
         run: |
           sed -i 's|path = "/home/mcoughli/blastwave"|path = "/home/runner/blastwave"|' Cargo.toml
 
-      - name: Install Python dependencies
-        run: pip install maturin numpy
+      - name: Create virtualenv and install dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install maturin numpy
 
       - name: Build and install Python extension
-        run: cd python && maturin develop
+        run: |
+          source .venv/bin/activate
+          cd python && maturin develop
 
       - name: Verify Python imports
-        run: python -c "from survey_sim import SurveyStore, KilonovaPopulation, GrbPopulation, BlastwaveModel, MetzgerKNModel, DetectionCriteria, SimulationPipeline, SimulationResult, RateSummary; print('All imports OK')"
+        run: |
+          source .venv/bin/activate
+          python -c "from survey_sim import SurveyStore, KilonovaPopulation, GrbPopulation, BlastwaveModel, MetzgerKNModel, DetectionCriteria, SimulationPipeline, SimulationResult, RateSummary; print('All imports OK')"
