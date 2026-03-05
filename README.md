@@ -18,7 +18,7 @@ A high-performance survey simulation framework for transient astronomy, written 
 - **Extensible** --- implement `PopulationGenerator` trait for custom populations
 
 ### Lightcurve Models
-- **Parametric** (Rust-native) --- Metzger KN, Bazin, Villar, TDE, Afterglow templates via [lightcurve-fitting](https://github.com/nuclear-multimessenger-astronomy/lightcurve-fitting)
+- **Parametric** (Rust-native) --- Metzger KN, Bazin, Villar, TDE, Afterglow templates via [lightcurve-fitting](https://github.com/boom-astro/lightcurve-fitting)
 - **Blastwave** (Rust-native) --- relativistic hydrodynamics + synchrotron radiation with self-absorption (SSA), PDE lateral spreading, and reverse shock; fully parallel via Rayon
 - **Python callback** --- wrap any Python model with a `.predict()` method (e.g., fiestaEM surrogate); runs sequentially due to GIL
 

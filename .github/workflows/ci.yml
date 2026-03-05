@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  rust-tests:
+    name: Rust Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install HDF5
+        run: sudo apt-get update && sudo apt-get install -y libhdf5-dev
+
+      - name: Clone lightcurve-fitting
+        run: git clone https://github.com/boom-astro/lightcurve-fitting.git ../lightcurve-fitting
+
+      - name: Clone blastwave
+        run: git clone https://github.com/nuclear-multimessenger-astronomy/blastwave.git /home/runner/blastwave
+
+      - name: Patch Cargo.toml for CI paths
+        run: |
+          sed -i 's|path = "/home/mcoughli/blastwave"|path = "/home/runner/blastwave"|' Cargo.toml
+
+      - name: Run cargo test
+        run: cargo test -p survey-sim --lib
+
+  python-build:
+    name: Python Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libhdf5-dev
+
+      - name: Clone lightcurve-fitting
+        run: git clone https://github.com/boom-astro/lightcurve-fitting.git ../lightcurve-fitting
+
+      - name: Clone blastwave
+        run: git clone https://github.com/nuclear-multimessenger-astronomy/blastwave.git /home/runner/blastwave
+
+      - name: Patch Cargo.toml for CI paths
+        run: |
+          sed -i 's|path = "/home/mcoughli/blastwave"|path = "/home/runner/blastwave"|' Cargo.toml
+
+      - name: Install Python dependencies
+        run: pip install maturin numpy
+
+      - name: Build and install Python extension
+        run: cd python && maturin develop
+
+      - name: Verify Python imports
+        run: python -c "from survey_sim import SurveyStore, KilonovaPopulation, GrbPopulation, BlastwaveModel, MetzgerKNModel, DetectionCriteria, SimulationPipeline, SimulationResult, RateSummary; print('All imports OK')"
