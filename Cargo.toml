@@ -9,8 +9,8 @@ description = "Survey simulation framework for transient astronomy"
 license = "GPL-3.0"
 
 [dependencies]
-lightcurve-fitting = { path = "../lightcurve-fitting" }
-blastwave = { path = "/home/mcoughli/blastwave" }
+lightcurve-fitting = { git = "https://github.com/boom-astro/lightcurve-fitting" }
+blastwave = { git = "https://github.com/nuclear-multimessenger-astronomy/blastwave" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 cdshealpix = "0.7"
 rayon = "1.10"

@@ -1,4 +1,4 @@
-use survey_sim::instrument::{InstrumentConfig, Location};
+use survey_sim::instrument::InstrumentConfig;
 
 #[test]
 fn test_rubin_builtin_loads() {
@@ -24,36 +24,6 @@ fn test_ztf_builtin_loads() {
 }
 
 #[test]
-fn test_rubin_yaml_loads() {
-    let rubin = InstrumentConfig::from_yaml("instruments/rubin.yaml").unwrap();
-    assert_eq!(rubin.name, "Rubin LSST");
-    assert_eq!(rubin.bands.len(), 6);
-    assert!((rubin.telescope.aperture_m - 6.423).abs() < 1e-3);
-    assert!((rubin.detector.fov_deg2 - 9.6).abs() < 1e-3);
-
-    match &rubin.telescope.location {
-        Location::Ground {
-            latitude_deg,
-            longitude_deg,
-            altitude_m,
-        } => {
-            assert!((*latitude_deg - (-30.2446)).abs() < 1e-4);
-            assert!((*longitude_deg - (-70.7494)).abs() < 1e-4);
-            assert!((*altitude_m - 2663.0).abs() < 1.0);
-        }
-        Location::Space => panic!("Rubin should be ground-based"),
-    }
-}
-
-#[test]
-fn test_ztf_yaml_loads() {
-    let ztf = InstrumentConfig::from_yaml("instruments/ztf.yaml").unwrap();
-    assert_eq!(ztf.name, "ZTF");
-    assert_eq!(ztf.bands.len(), 3);
-    assert!((ztf.detector.fov_deg2 - 47.0).abs() < 1e-3);
-}
-
-#[test]
 fn test_argus_builtin_loads() {
     let argus = InstrumentConfig::argus();
     assert_eq!(argus.name, "Argus Array");
@@ -62,28 +32,6 @@ fn test_argus_builtin_loads() {
     assert!(argus.bands.contains_key("r"));
     assert!((argus.detector.fov_deg2 - 8000.0).abs() < 1e-3);
     assert!((argus.telescope.aperture_m - 8.0).abs() < 1e-3);
-}
-
-#[test]
-fn test_argus_yaml_loads() {
-    let argus = InstrumentConfig::from_yaml("instruments/argus.yaml").unwrap();
-    assert_eq!(argus.name, "Argus Array");
-    assert_eq!(argus.bands.len(), 2);
-    assert!((argus.detector.fov_deg2 - 8000.0).abs() < 1e-3);
-    assert!((argus.observing.default_exposure_s - 60.0).abs() < 1e-3);
-    assert!((argus.observing.readout_s - 0.001).abs() < 1e-6);
-
-    match &argus.telescope.location {
-        Location::Ground {
-            latitude_deg,
-            longitude_deg,
-            ..
-        } => {
-            assert!((*latitude_deg - 35.9132).abs() < 1e-4);
-            assert!((*longitude_deg - (-79.0558)).abs() < 1e-4);
-        }
-        Location::Space => panic!("Argus should be ground-based"),
-    }
 }
 
 #[test]

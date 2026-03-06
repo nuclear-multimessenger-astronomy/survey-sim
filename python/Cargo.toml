@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 survey-sim = { path = ".." }
-lightcurve-fitting = { path = "../../lightcurve-fitting" }
+lightcurve-fitting = { git = "https://github.com/boom-astro/lightcurve-fitting" }
 pyo3 = { version = "0.23", features = ["extension-module"] }
 numpy = "0.23"
 rayon = "1.10"
