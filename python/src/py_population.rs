@@ -33,6 +33,35 @@ impl PyKilonovaPopulation {
     }
 }
 
+/// Python wrapper for FixedMetzgerKilonovaPopulation.
+#[pyclass]
+#[pyo3(name = "FixedMetzgerKilonovaPopulation")]
+pub struct PyFixedMetzgerKilonovaPopulation {
+    pub(crate) rate: f64,
+    pub(crate) z_max: f64,
+    pub(crate) mej: f64,
+    pub(crate) vej: f64,
+    pub(crate) kappa: f64,
+}
+
+#[pymethods]
+impl PyFixedMetzgerKilonovaPopulation {
+    #[new]
+    #[pyo3(signature = (mej, vej, kappa, rate=1000.0, z_max=0.3))]
+    fn new(mej: f64, vej: f64, kappa: f64, rate: f64, z_max: f64) -> Self {
+        Self { rate, z_max, mej, vej, kappa }
+    }
+}
+
+impl PyFixedMetzgerKilonovaPopulation {
+    pub fn to_generator(&self, mjd_min: f64, mjd_max: f64) -> FixedMetzgerKilonovaPopulation {
+        FixedMetzgerKilonovaPopulation::new(
+            self.rate, self.z_max, mjd_min, mjd_max,
+            self.mej, self.vej, self.kappa,
+        )
+    }
+}
+
 /// Python wrapper for Bu2026KilonovaPopulation.
 #[pyclass]
 #[pyo3(name = "Bu2026KilonovaPopulation")]
@@ -234,6 +263,7 @@ impl PyGrbPopulation {
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyKilonovaPopulation>()?;
+    m.add_class::<PyFixedMetzgerKilonovaPopulation>()?;
     m.add_class::<PyBu2026KilonovaPopulation>()?;
     m.add_class::<PyFixedBu2026KilonovaPopulation>()?;
     m.add_class::<PySupernovaIaPopulation>()?;

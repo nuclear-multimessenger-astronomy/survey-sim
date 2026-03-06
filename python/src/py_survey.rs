@@ -4,8 +4,12 @@ use std::collections::HashMap;
 use survey_sim::instrument::InstrumentConfig;
 use survey_sim::survey::argus::ArgusLoader;
 use survey_sim::survey::rubin::RubinLoader;
+use survey_sim::survey::too::{
+    self, TooTrigger,
+};
 use survey_sim::survey::ztf::{ZtfLoader, ZtfHdf5Loader, ZtfBoomLoader};
 use survey_sim::survey::{SurveyLoader, SurveyStore};
+use survey_sim::types::SkyCoord;
 
 /// Python wrapper for SurveyStore.
 #[pyclass]
@@ -82,10 +86,23 @@ impl PySurveyStore {
     }
 
     /// Load Argus Array observations from parquet files.
+    ///
+    /// If `stack_window_s` is provided, consecutive exposures within each
+    /// time window (in seconds) are co-added. The stacked depth improves
+    /// by 1.25 * log10(N) magnitudes, where N is the number of exposures
+    /// in each bin.
     #[staticmethod]
-    #[pyo3(signature = (parquet_paths, band="g", nside=64))]
-    fn from_argus(parquet_paths: Vec<String>, band: &str, nside: u32) -> PyResult<Self> {
-        let loader = ArgusLoader::new(parquet_paths, band);
+    #[pyo3(signature = (parquet_paths, band="g", nside=64, stack_window_s=None))]
+    fn from_argus(
+        parquet_paths: Vec<String>,
+        band: &str,
+        nside: u32,
+        stack_window_s: Option<f64>,
+    ) -> PyResult<Self> {
+        let mut loader = ArgusLoader::new(parquet_paths, band);
+        if let Some(window) = stack_window_s {
+            loader = loader.with_stacking(window);
+        }
         let instrument = loader.instrument();
         let obs = loader
             .load()
@@ -177,6 +194,84 @@ impl PySurveyStore {
             .as_ref()
             .map(|i| PyInstrument { inner: i.clone() })
     }
+
+    /// Add ToO follow-up observations for a trigger event.
+    ///
+    /// Args:
+    ///     strategy_name: Name of the built-in ToO strategy
+    ///         ("rubin_gold", "rubin_silver", "ztf", "ultrasat", "uvex")
+    ///     ra: Trigger right ascension in degrees
+    ///     dec: Trigger declination in degrees
+    ///     trigger_mjd: MJD of the trigger event
+    ///     localization_area_deg2: 90% credible localization area in sq deg
+    ///     distance_mpc: Distance estimate in Mpc (optional)
+    #[pyo3(signature = (strategy_name, ra, dec, trigger_mjd, localization_area_deg2, distance_mpc=None))]
+    fn add_too(
+        &mut self,
+        strategy_name: &str,
+        ra: f64,
+        dec: f64,
+        trigger_mjd: f64,
+        localization_area_deg2: f64,
+        distance_mpc: Option<f64>,
+    ) -> PyResult<usize> {
+        let strategy = too::builtin_strategy(strategy_name).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Unknown ToO strategy: '{}'. Available: rubin_gold, rubin_silver, ztf, ultrasat, uvex",
+                strategy_name
+            ))
+        })?;
+        let trigger = TooTrigger {
+            coord: SkyCoord::new(ra, dec),
+            trigger_mjd,
+            localization_area_deg2,
+            distance_mpc,
+        };
+        let start_id = self.inner.len() as u64;
+        let obs = strategy.generate_observations(&trigger, start_id);
+        let n_added = obs.len();
+        self.inner.add_observations(obs);
+        Ok(n_added)
+    }
+
+    /// Create a SurveyStore from ToO observations only (no base survey).
+    ///
+    /// Args:
+    ///     strategy_name: Name of the built-in ToO strategy
+    ///     ra: Trigger right ascension in degrees
+    ///     dec: Trigger declination in degrees
+    ///     trigger_mjd: MJD of the trigger event
+    ///     localization_area_deg2: 90% credible localization area in sq deg
+    ///     distance_mpc: Distance estimate in Mpc (optional)
+    ///     nside: HEALPix NSIDE for spatial indexing (default 64)
+    #[staticmethod]
+    #[pyo3(signature = (strategy_name, ra, dec, trigger_mjd, localization_area_deg2, distance_mpc=None, nside=64))]
+    fn from_too(
+        strategy_name: &str,
+        ra: f64,
+        dec: f64,
+        trigger_mjd: f64,
+        localization_area_deg2: f64,
+        distance_mpc: Option<f64>,
+        nside: u32,
+    ) -> PyResult<Self> {
+        let strategy = too::builtin_strategy(strategy_name).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Unknown ToO strategy: '{}'. Available: rubin_gold, rubin_silver, ztf, ultrasat, uvex",
+                strategy_name
+            ))
+        })?;
+        let trigger = TooTrigger {
+            coord: SkyCoord::new(ra, dec),
+            trigger_mjd,
+            localization_area_deg2,
+            distance_mpc,
+        };
+        let obs = strategy.generate_observations(&trigger, 0);
+        let instrument = strategy.instrument();
+        let store = SurveyStore::from_too(obs, nside, instrument);
+        Ok(Self { inner: store })
+    }
 }
 
 /// Python wrapper for InstrumentConfig.
@@ -208,6 +303,22 @@ impl PyInstrument {
     fn ztf() -> Self {
         Self {
             inner: InstrumentConfig::ztf(),
+        }
+    }
+
+    /// Built-in ULTRASAT instrument.
+    #[staticmethod]
+    fn ultrasat() -> Self {
+        Self {
+            inner: InstrumentConfig::ultrasat(),
+        }
+    }
+
+    /// Built-in UVEX instrument.
+    #[staticmethod]
+    fn uvex() -> Self {
+        Self {
+            inner: InstrumentConfig::uvex(),
         }
     }
 
@@ -267,8 +378,104 @@ impl PyInstrument {
     }
 }
 
+/// Python wrapper for GW observing scenario events.
+#[pyclass(name = "GwEvent")]
+pub struct PyGwEvent {
+    pub(crate) inner: survey_sim::survey::observing_scenario::GwEvent,
+}
+
+#[pymethods]
+impl PyGwEvent {
+    #[getter]
+    fn simulation_id(&self) -> u64 { self.inner.simulation_id }
+    #[getter]
+    fn ra(&self) -> f64 { self.inner.ra }
+    #[getter]
+    fn dec(&self) -> f64 { self.inner.dec }
+    #[getter]
+    fn distance_mpc(&self) -> f64 { self.inner.distance_mpc }
+    #[getter]
+    fn mass1(&self) -> f64 { self.inner.mass1 }
+    #[getter]
+    fn mass2(&self) -> f64 { self.inner.mass2 }
+    #[getter]
+    fn inclination(&self) -> f64 { self.inner.inclination }
+    #[getter]
+    fn snr(&self) -> f64 { self.inner.snr }
+    #[getter]
+    fn area_90(&self) -> f64 { self.inner.area_90 }
+    #[getter]
+    fn area_50(&self) -> f64 { self.inner.area_50 }
+    #[getter]
+    fn dist_mean(&self) -> f64 { self.inner.dist_mean }
+    #[getter]
+    fn dist_std(&self) -> f64 { self.inner.dist_std }
+    #[getter]
+    fn ifos(&self) -> &str { &self.inner.ifos }
+    #[getter]
+    fn is_bns(&self) -> bool { self.inner.is_bns() }
+    #[getter]
+    fn is_nsbh(&self) -> bool { self.inner.is_nsbh() }
+    #[getter]
+    fn is_bbh(&self) -> bool { self.inner.is_bbh() }
+    #[getter]
+    fn chirp_mass(&self) -> f64 { self.inner.chirp_mass() }
+
+    /// Construct a GwEvent from individual values (used by HDF5 loader).
+    #[staticmethod]
+    #[pyo3(signature = (simulation_id, ra, dec, distance_mpc, mass1, mass2, inclination, snr, far, area_90, area_50, dist_mean, dist_std))]
+    fn _from_values(
+        simulation_id: u64, ra: f64, dec: f64, distance_mpc: f64,
+        mass1: f64, mass2: f64, inclination: f64,
+        snr: f64, far: f64,
+        area_90: f64, area_50: f64, dist_mean: f64, dist_std: f64,
+    ) -> Self {
+        use survey_sim::survey::observing_scenario::GwEvent;
+        PyGwEvent {
+            inner: GwEvent {
+                simulation_id,
+                coinc_event_id: simulation_id,
+                longitude: ra.to_radians(),
+                latitude: dec.to_radians(),
+                ra, dec, distance_mpc, mass1, mass2,
+                spin1z: 0.0, spin2z: 0.0,
+                inclination, snr, far,
+                area_90, area_50, dist_mean, dist_std,
+                ifos: String::new(),
+            },
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        let kind = if self.inner.is_bns() { "BNS" }
+            else if self.inner.is_nsbh() { "NSBH" }
+            else { "BBH" };
+        format!(
+            "GwEvent(id={}, {}, d={:.0}Mpc, area90={:.0}deg², snr={:.1})",
+            self.inner.simulation_id, kind,
+            self.inner.distance_mpc, self.inner.area_90, self.inner.snr,
+        )
+    }
+}
+
+/// Load GW events from an observing scenario run directory.
+///
+/// Args:
+///     run_dir: Path to run directory (e.g. "runs/O5a/bgp/")
+///
+/// Returns:
+///     List of GwEvent objects with truth parameters and skymap statistics.
+#[pyfunction]
+fn load_gw_events(run_dir: &str) -> PyResult<Vec<PyGwEvent>> {
+    let events = survey_sim::survey::observing_scenario::load_observing_scenario(run_dir)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
+    Ok(events.into_iter().map(|e| PyGwEvent { inner: e }).collect())
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySurveyStore>()?;
     m.add_class::<PyInstrument>()?;
+    m.add_class::<PyGwEvent>()?;
+    m.add_function(wrap_pyfunction!(load_gw_events, m)?)?;
     Ok(())
 }

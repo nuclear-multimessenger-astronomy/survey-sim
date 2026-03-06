@@ -15,6 +15,13 @@ pub use detection::{DetectionCriteria, DetectionResult};
 pub use instrument::InstrumentConfig;
 pub use lightcurve::{LightcurveEvaluation, LightcurveModel};
 pub use pipeline::{SimulationPipeline, SimulationResult};
+pub use pipeline::too::{run_too_simulation, TooEventResult, TooSimulationResult};
 pub use population::{PopulationGenerator, TransientPopulation};
+pub use survey::observing_scenario::{GwEvent, load_observing_scenario};
+pub use survey::too::{
+    TooStrategy, TooTrigger, TooVisit,
+    RubinGoldToo, RubinSilverToo, ZtfToo, UltrasatToo, UvexToo,
+    builtin_strategy,
+};
 pub use survey::{SurveyLoader, SurveyObservation, SurveyStore};
 pub use types::{Band, Cosmology, SkyCoord, TransientInstance, TransientType};

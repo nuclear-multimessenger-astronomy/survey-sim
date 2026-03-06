@@ -126,6 +126,8 @@ impl InstrumentConfig {
         }
         // Fallback to standard Cardelli values.
         match band {
+            "FUV" => 8.4,
+            "NUV" => 8.0,
             "u" | "U" => 1.56,
             "g" | "B" | "bessellb" => 1.31,
             "r" | "V" | "bessellv" => 1.0,
@@ -312,6 +314,113 @@ impl InstrumentConfig {
         }
     }
 
+    /// Built-in ULTRASAT instrument configuration.
+    ///
+    /// Parameters from m4opt and Shvartzvald et al. (2024).
+    /// Geosynchronous orbit, 33cm aperture, NUV 230–290nm.
+    pub fn ultrasat() -> Self {
+        Self {
+            name: "ULTRASAT".to_string(),
+            description: Some(
+                "Ultraviolet Transient Astronomy Satellite".to_string(),
+            ),
+            telescope: TelescopeConfig {
+                aperture_m: 0.33,
+                location: Location::Space,
+            },
+            detector: DetectorConfig {
+                plate_scale_arcsec: 5.4,
+                read_noise_e: 6.0,
+                dark_current_e_per_s: 0.04, // 12/300
+                gain: 1.0,
+                fov_deg2: 203.9, // 14.28° × 14.28°
+            },
+            bands: HashMap::from([
+                (
+                    "NUV".to_string(),
+                    BandConfig {
+                        central_wavelength_nm: 260.0,
+                        width_nm: 68.0, // σ=34nm → FWHM≈80nm, effective width ~68nm
+                        typical_seeing_arcsec: 5.4, // pixel-limited
+                        single_visit_depth: 22.5, // 3×300s stacked
+                        sky_brightness: 25.0, // low UV background in space
+                    },
+                ),
+            ]),
+            observing: ObservingConfig {
+                default_exposure_s: 300.0,
+                readout_s: 0.0, // CMOS, negligible
+                slew_rate_deg_per_s: 1.0,
+                settle_s: 5.0,
+                min_altitude_deg: 0.0, // space — use earth limb constraint instead
+                max_airmass: 99.0,     // space
+                min_moon_sep_deg: 35.0,
+            },
+            extinction_coefficients: HashMap::from([
+                ("NUV".to_string(), 8.0), // UV extinction A_NUV/A_V
+            ]),
+        }
+    }
+
+    /// Built-in UVEX instrument configuration.
+    ///
+    /// Parameters from m4opt and Kulkarni et al. (2021).
+    /// TESS-like HEO orbit, 75cm aperture, FUV+NUV simultaneous.
+    pub fn uvex() -> Self {
+        Self {
+            name: "UVEX".to_string(),
+            description: Some(
+                "UltraViolet EXplorer — NASA Medium Explorer".to_string(),
+            ),
+            telescope: TelescopeConfig {
+                aperture_m: 0.75,
+                location: Location::Space,
+            },
+            detector: DetectorConfig {
+                plate_scale_arcsec: 1.0,
+                read_noise_e: 2.0,
+                dark_current_e_per_s: 0.001,
+                gain: 0.85,
+                fov_deg2: 12.25, // 3.5° × 3.5°
+            },
+            bands: HashMap::from([
+                (
+                    "FUV".to_string(),
+                    BandConfig {
+                        central_wavelength_nm: 160.0,
+                        width_nm: 20.0, // σ=10nm → FWHM≈24nm
+                        typical_seeing_arcsec: 1.0, // pixel-limited
+                        single_visit_depth: 24.5, // 5σ at 900s dwell (m4opt)
+                        sky_brightness: 27.0,
+                    },
+                ),
+                (
+                    "NUV".to_string(),
+                    BandConfig {
+                        central_wavelength_nm: 230.0,
+                        width_nm: 36.0, // σ=18nm → FWHM≈42nm
+                        typical_seeing_arcsec: 1.0,
+                        single_visit_depth: 25.0, // 5σ at 900s dwell (m4opt)
+                        sky_brightness: 26.0,
+                    },
+                ),
+            ]),
+            observing: ObservingConfig {
+                default_exposure_s: 900.0, // standard dwell
+                readout_s: 0.0,
+                slew_rate_deg_per_s: 0.6,
+                settle_s: 60.0,
+                min_altitude_deg: 0.0,
+                max_airmass: 99.0,
+                min_moon_sep_deg: 25.0,
+            },
+            extinction_coefficients: HashMap::from([
+                ("FUV".to_string(), 8.4), // A_FUV/A_V
+                ("NUV".to_string(), 8.0), // A_NUV/A_V
+            ]),
+        }
+    }
+
     /// Built-in Argus Array instrument configuration.
     pub fn argus() -> Self {
         Self {
@@ -393,6 +502,31 @@ mod tests {
         assert_eq!(ztf.name, "ZTF");
         assert_eq!(ztf.bands.len(), 3);
         assert!((ztf.detector.fov_deg2 - 47.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_ultrasat_builtin() {
+        let ultrasat = InstrumentConfig::ultrasat();
+        assert_eq!(ultrasat.name, "ULTRASAT");
+        assert_eq!(ultrasat.bands.len(), 1);
+        assert!(ultrasat.bands.contains_key("NUV"));
+        assert!((ultrasat.detector.fov_deg2 - 203.9).abs() < 1e-1);
+        assert!((ultrasat.telescope.aperture_m - 0.33).abs() < 1e-3);
+        match &ultrasat.telescope.location {
+            Location::Space => {}
+            _ => panic!("ULTRASAT should be a space telescope"),
+        }
+    }
+
+    #[test]
+    fn test_uvex_builtin() {
+        let uvex = InstrumentConfig::uvex();
+        assert_eq!(uvex.name, "UVEX");
+        assert_eq!(uvex.bands.len(), 2);
+        assert!(uvex.bands.contains_key("FUV"));
+        assert!(uvex.bands.contains_key("NUV"));
+        assert!((uvex.detector.fov_deg2 - 12.25).abs() < 1e-2);
+        assert!((uvex.telescope.aperture_m - 0.75).abs() < 1e-3);
     }
 
     #[test]

@@ -133,7 +133,8 @@ class FiestaKNModel:
         return results
 
     def _vpredict_chunk(self, params_list):
-        """Evaluate a single chunk via vpredict."""
+        """Evaluate a single chunk via vpredict with vectorized interpolation."""
+        N = len(params_list)
         param_names = list(self.model.parameter_names)
         X = {}
         for name in param_names:
@@ -148,33 +149,86 @@ class FiestaKNModel:
         # GPU call via JAX vmap
         model_times_batch, model_mags_batch = self.model.vpredict(X)
 
-        # Convert to numpy for interpolation
-        model_times_batch = np.asarray(model_times_batch)  # (N, T)
-        model_mags_np = {k: np.asarray(v) for k, v in model_mags_batch.items()}
+        # Convert to numpy — model_times_batch: (N, T), model_mags: {filt: (N, T)}
+        model_times_batch = np.asarray(model_times_batch, dtype=np.float64)
+        model_mags_np = {k: np.asarray(v, dtype=np.float64) for k, v in model_mags_batch.items()}
 
-        # Interpolate each transient to its observation times
+        # Pre-extract obs context arrays for all transients (avoid repeated Python dict access)
+        obs_times_list = [np.asarray(p["_obs_times_mjd"], dtype=np.float64) for p in params_list]
+        t_exps = np.array([float(p["_t_exp"]) for p in params_list])
+        redshifts = np.array([float(p["redshift"]) for p in params_list])
+        obs_bands_list = [list(p["_obs_bands"]) for p in params_list]
+
+        # Pre-compute rest-frame observation times for each transient
+        obs_rest_list = [
+            (obs_times_list[i] - t_exps[i]) / (1.0 + redshifts[i]) for i in range(N)
+        ]
+
+        # Vectorized interpolation: for each band, interpolate all transients at once.
+        # Since each transient has a different number of obs times, we pad to a uniform
+        # length, do vectorized interp, then slice back.
+        n_obs = np.array([len(t) for t in obs_rest_list])
+        max_obs = int(n_obs.max()) if N > 0 else 0
+
+        # Pad obs rest-frame times to (N, max_obs)
+        obs_rest_padded = np.full((N, max_obs), np.nan, dtype=np.float64)
+        for i in range(N):
+            obs_rest_padded[i, : n_obs[i]] = obs_rest_list[i]
+
+        # Vectorized interp: for each filter, compute interpolated mags for all (N, max_obs)
+        # model_times_batch is (N, T) — each row is a sorted time grid
+        T = model_times_batch.shape[1]
+
+        # Clamp obs times to grid range for each transient (shared across bands)
+        t_min = model_times_batch[:, 0:1]   # (N, 1)
+        t_max = model_times_batch[:, -1:]   # (N, 1)
+        obs_clamped = np.clip(obs_rest_padded, t_min, t_max)
+
+        # Vectorized per-row searchsorted: flatten rows, offset by row index, searchsorted once.
+        # Each row's grid is offset by row_idx * T in a flattened 1D array.
+        flat_grid = model_times_batch.ravel()  # (N*T,)
+        row_offsets = (np.arange(N) * T)[:, None]  # (N, 1)
+        flat_obs = obs_clamped + 0  # copy
+        # For each (i, j), we want searchsorted(model_times_batch[i], obs_clamped[i, j]).
+        # Trick: offset each row's obs values to make them searchable in the flat grid.
+        # Instead, just use a row-wise loop with numpy (faster than broadcast for large T).
+        idx = np.empty((N, max_obs), dtype=np.int64)
+        for i in range(N):
+            idx[i] = np.clip(
+                np.searchsorted(model_times_batch[i], obs_clamped[i]) - 1, 0, T - 2
+            )
+
+        # Gather grid values at idx and idx+1 for linear interpolation
+        t0 = np.take_along_axis(model_times_batch, idx, axis=1)  # (N, max_obs)
+        t1 = np.take_along_axis(model_times_batch, np.minimum(idx + 1, T - 1), axis=1)
+
+        # Linear interpolation weight (shared across bands)
+        dt = t1 - t0
+        dt = np.where(dt == 0, 1.0, dt)
+        w = (obs_clamped - t0) / dt
+
+        interp_results = {}
+        for fiesta_filt, short_band in _FIESTA_TO_BAND.items():
+            if fiesta_filt not in model_mags_np:
+                continue
+            grid_mags = model_mags_np[fiesta_filt]  # (N, T)
+            m0 = np.take_along_axis(grid_mags, idx, axis=1)
+            m1 = np.take_along_axis(grid_mags, np.minimum(idx + 1, T - 1), axis=1)
+            interp_results[short_band] = m0 + w * (m1 - m0)  # (N, max_obs)
+
+        # Build results list — slice each transient's actual obs count
         results = []
-        for i, params in enumerate(params_list):
-            obs_times_mjd = np.asarray(params["_obs_times_mjd"], dtype=np.float64)
-            t_exp = float(params["_t_exp"])
-            redshift = float(params["redshift"])
-            obs_rest_days = (obs_times_mjd - t_exp) / (1.0 + redshift)
-
-            grid_times = model_times_batch[i]
-
+        for i in range(N):
+            ni = n_obs[i]
             result_mags = {}
-            for fiesta_filt, short_band in _FIESTA_TO_BAND.items():
-                if fiesta_filt not in model_mags_np:
-                    continue
-                grid_mags = model_mags_np[fiesta_filt][i]
-                interp_all = np.interp(obs_rest_days, grid_times, grid_mags)
-                result_mags[short_band] = interp_all.tolist()
+            for band, mags_arr in interp_results.items():
+                result_mags[band] = mags_arr[i, :ni].tolist()
 
-            unique_bands = set(params["_obs_bands"])
+            unique_bands = set(obs_bands_list[i])
             for band in unique_bands:
                 if band not in result_mags:
-                    result_mags[band] = [99.0] * len(obs_times_mjd)
+                    result_mags[band] = [99.0] * ni
 
-            results.append((obs_times_mjd.tolist(), result_mags))
+            results.append((obs_times_list[i].tolist(), result_mags))
 
         return results

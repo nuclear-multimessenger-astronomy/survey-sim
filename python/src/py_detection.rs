@@ -26,6 +26,12 @@ impl PyDetectionCriteria {
         require_fast_transient=false,
         min_rise_rate=1.0,
         min_fade_rate=0.3,
+        min_pre_peak_detections=0,
+        min_post_peak_detections=0,
+        min_phase_range_days=0.0,
+        min_galactic_lat=0.0,
+        spectroscopic_completeness_k=0.0,
+        spectroscopic_completeness_m0=19.46,
     ))]
     fn new(
         min_detections: usize,
@@ -39,6 +45,12 @@ impl PyDetectionCriteria {
         require_fast_transient: bool,
         min_rise_rate: f64,
         min_fade_rate: f64,
+        min_pre_peak_detections: usize,
+        min_post_peak_detections: usize,
+        min_phase_range_days: f64,
+        min_galactic_lat: f64,
+        spectroscopic_completeness_k: f64,
+        spectroscopic_completeness_m0: f64,
     ) -> Self {
         Self {
             inner: DetectionCriteria {
@@ -53,6 +65,12 @@ impl PyDetectionCriteria {
                 require_fast_transient,
                 min_rise_rate,
                 min_fade_rate,
+                min_pre_peak_detections,
+                min_post_peak_detections,
+                min_phase_range_days,
+                min_galactic_lat,
+                spectroscopic_completeness_k,
+                spectroscopic_completeness_m0,
             },
         }
     }
@@ -78,6 +96,8 @@ pub struct PyDetectionResult {
     #[pyo3(get)]
     pub n_detections: usize,
     #[pyo3(get)]
+    pub n_detections_primary: usize,
+    #[pyo3(get)]
     pub n_bands_detected: usize,
     #[pyo3(get)]
     pub first_detection_mjd: Option<f64>,
@@ -85,14 +105,28 @@ pub struct PyDetectionResult {
     pub last_detection_mjd: Option<f64>,
     #[pyo3(get)]
     pub detections_per_band: HashMap<String, usize>,
+    #[pyo3(get)]
+    pub peak_mjd: Option<f64>,
+    #[pyo3(get)]
+    pub peak_mag: Option<f64>,
+    #[pyo3(get)]
+    pub n_pre_peak: usize,
+    #[pyo3(get)]
+    pub n_post_peak: usize,
+    #[pyo3(get)]
+    pub phase_min_days: Option<f64>,
+    #[pyo3(get)]
+    pub phase_max_days: Option<f64>,
 }
 
 #[pymethods]
 impl PyDetectionResult {
     fn __repr__(&self) -> String {
         format!(
-            "DetectionResult(detected={}, n_detections={}, n_bands={})",
-            self.detected, self.n_detections, self.n_bands_detected
+            "DetectionResult(detected={}, n_det={}, n_bands={}, peak_mag={}, pre/post={}/{})",
+            self.detected, self.n_detections, self.n_bands_detected,
+            self.peak_mag.map_or("None".to_string(), |m| format!("{:.1}", m)),
+            self.n_pre_peak, self.n_post_peak,
         )
     }
 }

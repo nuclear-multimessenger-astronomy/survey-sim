@@ -7,6 +7,35 @@ use crate::types::{Band, TransientInstance};
 use super::cosmology::{extinction_in_band, k_correction_bolometric};
 use super::{LightcurveEvaluation, LightcurveModel, Result};
 
+/// Speed of light in cm/s (for wavelength → frequency conversion).
+const C_CMS: f64 = 2.998e10;
+/// Mpc in cm.
+const MPC_CM: f64 = 3.0857e24;
+
+/// Map band short name to effective wavelength in Angstroms.
+fn band_wavelength_angstrom(band: &str) -> Option<f64> {
+    match band {
+        // UV bands (from m4opt instrument configs)
+        "FUV" => Some(1600.0),  // UVEX FUV: 160nm
+        "NUV" => Some(2600.0),  // ULTRASAT NUV: 260nm (also UVEX NUV at 230nm)
+        // Optical/NIR
+        "u" => Some(3671.0),
+        "g" => Some(4770.0),
+        "r" => Some(6231.0),
+        "i" => Some(7625.0),
+        "z" => Some(8691.0),
+        "y" | "Y" => Some(9712.0),
+        // LSST names
+        "lsstu" => Some(3671.0),
+        "lsstg" => Some(4827.0),
+        "lsstr" => Some(6223.0),
+        "lssti" => Some(7546.0),
+        "lsstz" => Some(8691.0),
+        "lssty" => Some(9712.0),
+        _ => None,
+    }
+}
+
 /// Maps TransientType to the appropriate SviModelName for lightcurve-fitting.
 fn default_model_for_type(
     transient_type: crate::types::TransientType,
@@ -25,12 +54,11 @@ fn default_model_for_type(
 
 /// Parametric lightcurve model wrapping lightcurve-fitting's eval_model_flux.
 ///
-/// Pipeline:
-/// 1. Convert observer-frame times to rest-frame relative times
-/// 2. Evaluate normalized flux via eval_model_flux (peak ~ 1)
-/// 3. Convert to absolute magnitude using peak_abs_mag
-/// 4. Apply distance modulus, K-correction, and extinction
-/// 5. Add per-band color offsets
+/// For MetzgerKN: uses `metzger_kn_mags` which computes per-band apparent AB
+/// magnitudes via blackbody emission (temperature from 1-zone ODE).
+///
+/// For other models: evaluates normalized flux via `eval_model_flux`, then
+/// converts to apparent magnitudes using peak_abs_mag + distance modulus.
 pub struct ParametricModel {
     /// Override the default model name (otherwise inferred from TransientType).
     pub model_override: Option<SviModelName>,
@@ -83,10 +111,13 @@ impl LightcurveModel for ParametricModel {
         // Get model parameters as a flat array.
         let params = extract_model_params(instance, model);
 
-        // Evaluate normalized flux (peak ~ 1).
+        if model == SviModelName::MetzgerKN {
+            return self.evaluate_metzger(instance, times_mjd, bands, &rest_times, &params);
+        }
+
+        // --- Generic path for all other models ---
         let norm_flux = lightcurve_fitting::eval_model_flux(model, &params, &rest_times);
 
-        // Convert flux to magnitudes for each band.
         let distance_modulus = if instance.d_l > 0.0 {
             let d_l_pc = instance.d_l * 1e6;
             5.0 * (d_l_pc / 10.0).log10()
@@ -105,19 +136,73 @@ impl LightcurveModel for ParametricModel {
                 .iter()
                 .map(|&f| {
                     if f <= 0.0 {
-                        // No flux -> set to very faint magnitude.
                         return 99.0;
                     }
-                    // Normalized flux -> absolute mag.
-                    // peak_abs_mag corresponds to flux=1.
                     let abs_mag = instance.peak_abs_mag - 2.5 * f.log10();
-
-                    // Apply distance modulus, K-correction, extinction, color.
                     abs_mag + distance_modulus + k_corr + mw_ext + host_ext + color_offset
                 })
                 .collect();
 
             apparent_mags.insert(band.0.clone(), mags);
+        }
+
+        Ok(LightcurveEvaluation {
+            apparent_mags,
+            times_mjd: times_mjd.to_vec(),
+        })
+    }
+}
+
+impl ParametricModel {
+    /// MetzgerKN path: computes per-band apparent AB magnitudes via blackbody.
+    fn evaluate_metzger(
+        &self,
+        instance: &TransientInstance,
+        times_mjd: &[f64],
+        bands: &[Band],
+        rest_times: &[f64],
+        params: &[f64],
+    ) -> Result<LightcurveEvaluation> {
+        // Build (band_name, frequency_Hz) pairs for unique bands.
+        // Frequency in host frame: ν_host = ν_obs * (1 + z)
+        let unique_bands: Vec<String> = {
+            let mut seen = std::collections::HashSet::new();
+            bands.iter().filter_map(|b| {
+                if seen.insert(b.0.clone()) { Some(b.0.clone()) } else { None }
+            }).collect()
+        };
+
+        let band_freqs: Vec<(&str, f64)> = unique_bands
+            .iter()
+            .filter_map(|name| {
+                let lambda_a = band_wavelength_angstrom(name)?;
+                // Host-frame frequency: ν = c / λ, with λ in cm (Å * 1e-8)
+                let nu_obs = C_CMS / (lambda_a * 1e-8);
+                let nu_host = nu_obs * (1.0 + instance.z);
+                Some((name.as_str(), nu_host))
+            })
+            .collect();
+
+        let d_l_cm = instance.d_l * MPC_CM;
+
+        let mag_map = lightcurve_fitting::metzger_kn_mags(params, rest_times, &band_freqs, d_l_cm);
+
+        // Apply extinction to the raw AB mags
+        let mut apparent_mags = HashMap::new();
+        for band in bands {
+            let band_name = &band.0;
+            if let Some(raw_mags) = mag_map.get(band_name) {
+                let mw_ext = extinction_in_band(instance.mw_extinction_av, band_name);
+                let host_ext = extinction_in_band(instance.host_extinction_av, band_name);
+                let mags: Vec<f64> = raw_mags
+                    .iter()
+                    .map(|&m| if m < 90.0 { m + mw_ext + host_ext } else { m })
+                    .collect();
+                apparent_mags.insert(band_name.clone(), mags);
+            } else {
+                // Band not recognized — fill with faint
+                apparent_mags.insert(band_name.clone(), vec![99.0; times_mjd.len()]);
+            }
         }
 
         Ok(LightcurveEvaluation {

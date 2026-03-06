@@ -2,30 +2,34 @@ use rand::Rng;
 
 use crate::types::Cosmology;
 
-/// Sample a redshift from the volumetric rate distribution dN/dz ~ dV/dz.
-///
-/// Uses rejection sampling with dV/dz as the weight.
-pub fn sample_redshift_volumetric(
-    z_max: f64,
-    cosmo: &Cosmology,
-    rng: &mut (impl Rng + ?Sized),
-) -> f64 {
-    // Pre-compute maximum dV/dz for rejection sampling.
-    // dV/dz peaks near z_max for typical z_max < 2.
+/// Compute the maximum dV/dz over [0, z_max] for rejection sampling envelope.
+pub fn max_dvdz(z_max: f64, cosmo: &Cosmology) -> f64 {
     let n_probe = 100;
-    let mut max_dvdz: f64 = 0.0;
+    let mut max_val: f64 = 0.0;
     for i in 0..=n_probe {
         let z = z_max * i as f64 / n_probe as f64;
         let dvdz = cosmo.dv_dz(z);
-        if dvdz > max_dvdz {
-            max_dvdz = dvdz;
+        if dvdz > max_val {
+            max_val = dvdz;
         }
     }
+    max_val
+}
 
+/// Sample a redshift from the volumetric rate distribution dN/dz ~ dV/dz.
+///
+/// Uses rejection sampling with dV/dz as the weight.
+/// `envelope` is the precomputed maximum of dV/dz over [0, z_max].
+pub fn sample_redshift_volumetric(
+    z_max: f64,
+    cosmo: &Cosmology,
+    envelope: f64,
+    rng: &mut (impl Rng + ?Sized),
+) -> f64 {
     loop {
         let z: f64 = rng.random::<f64>() * z_max;
         let dvdz = cosmo.dv_dz(z);
-        let accept_prob = dvdz / max_dvdz;
+        let accept_prob = dvdz / envelope;
         if rng.random::<f64>() < accept_prob {
             return z;
         }
@@ -83,8 +87,9 @@ mod tests {
         let n = 10_000;
         let z_max = 0.3;
 
+        let envelope = max_dvdz(z_max, &cosmo);
         let samples: Vec<f64> = (0..n)
-            .map(|_| sample_redshift_volumetric(z_max, &cosmo, &mut rng))
+            .map(|_| sample_redshift_volumetric(z_max, &cosmo, envelope, &mut rng))
             .collect();
 
         // All samples should be in [0, z_max].

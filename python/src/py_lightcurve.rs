@@ -39,14 +39,17 @@ impl PyMetzgerKNModel {
 pub struct PythonCallbackModel {
     callback: PyObject,
     has_batch: bool,
+    has_columnar: bool,
 }
 
 impl PythonCallbackModel {
     pub fn new(callback: PyObject) -> Self {
-        let has_batch = Python::with_gil(|py| {
-            callback.getattr(py, "batch_predict").is_ok()
+        let (has_batch, has_columnar) = Python::with_gil(|py| {
+            let batch = callback.getattr(py, "batch_predict").is_ok();
+            let columnar = callback.getattr(py, "batch_evaluate_arrays").is_ok();
+            (batch, columnar)
         });
-        Self { callback, has_batch }
+        Self { callback, has_batch, has_columnar }
     }
 }
 
@@ -72,6 +75,9 @@ impl LightcurveModel for PythonCallbackModel {
                 .map_err(|e| LightcurveError::PythonError(e.to_string()))?;
             params_dict
                 .set_item("redshift", instance.z)
+                .map_err(|e| LightcurveError::PythonError(e.to_string()))?;
+            params_dict
+                .set_item("peak_abs_mag", instance.peak_abs_mag)
                 .map_err(|e| LightcurveError::PythonError(e.to_string()))?;
 
             // Pass observation context so adapters can interpolate to obs times.
@@ -141,7 +147,6 @@ impl LightcurveModel for PythonCallbackModel {
         bands: &[&[Band]],
     ) -> Vec<survey_sim::lightcurve::Result<LightcurveEvaluation>> {
         if !self.has_batch {
-            // Fall back to sequential
             return instances
                 .iter()
                 .zip(times_mjd.iter())
@@ -150,8 +155,163 @@ impl LightcurveModel for PythonCallbackModel {
                 .collect();
         }
 
+        // Fast columnar path: pass arrays instead of 66K dicts.
+        if self.has_columnar {
+            return self.batch_evaluate_columnar(instances, times_mjd, bands);
+        }
+
+        // Legacy dict-based path.
+        self.batch_evaluate_dicts(instances, times_mjd, bands)
+    }
+}
+
+impl PythonCallbackModel {
+    /// Fast columnar path: pass numpy arrays instead of per-transient dicts.
+    fn batch_evaluate_columnar(
+        &self,
+        instances: &[&TransientInstance],
+        times_mjd: &[&[f64]],
+        bands: &[&[Band]],
+    ) -> Vec<survey_sim::lightcurve::Result<LightcurveEvaluation>> {
         Python::with_gil(|py| {
-            // Build a list of param dicts for batch_predict
+            let n = instances.len();
+
+            // Build columnar arrays.
+            let redshifts: Vec<f64> = instances.iter().map(|i| i.z).collect();
+            let d_ls: Vec<f64> = instances.iter().map(|i| i.d_l).collect();
+            let peak_mags: Vec<f64> = instances.iter().map(|i| i.peak_abs_mag).collect();
+            let t_exps: Vec<f64> = instances.iter().map(|i| i.t_exp).collect();
+
+            // Collect model param names (from first instance).
+            let param_names: Vec<String> = if n > 0 {
+                instances[0].model_params.keys().cloned().collect()
+            } else {
+                vec![]
+            };
+            let param_arrays: Vec<Vec<f64>> = param_names
+                .iter()
+                .map(|name| {
+                    instances
+                        .iter()
+                        .map(|inst| inst.model_params.get(name).copied().unwrap_or(0.0))
+                        .collect()
+                })
+                .collect();
+
+            // Flatten obs times and bands.
+            let obs_counts: Vec<i64> = times_mjd.iter().map(|t| t.len() as i64).collect();
+            let obs_times_flat: Vec<f64> = times_mjd.iter().flat_map(|t| t.iter().copied()).collect();
+            let obs_bands_flat: Vec<String> = bands
+                .iter()
+                .flat_map(|b| b.iter().map(|band| band.to_string()))
+                .collect();
+
+            // Convert to Python objects.
+            let py_param_names = pyo3::types::PyList::new(py, &param_names)
+                .expect("Failed to create param names list");
+            let py_param_arrays = pyo3::types::PyList::new(
+                py,
+                param_arrays.iter().map(|a| pyo3::types::PyList::new(py, a).unwrap()),
+            )
+            .expect("Failed to create param arrays list");
+
+            let result = match self.callback.call_method(
+                py,
+                "batch_evaluate_arrays",
+                (
+                    redshifts,
+                    d_ls,
+                    peak_mags,
+                    py_param_names,
+                    py_param_arrays,
+                    obs_times_flat,
+                    obs_bands_flat,
+                    obs_counts,
+                    t_exps,
+                ),
+                None,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    let msg = format!("batch_evaluate_arrays failed: {}", e);
+                    return (0..n)
+                        .map(|_| Err(LightcurveError::PythonError(msg.clone())))
+                        .collect();
+                }
+            };
+
+            // Unpack flat return: (obs_times_flat, {band: flat_mags}, obs_counts)
+            let tuple = match result.downcast_bound::<pyo3::types::PyTuple>(py) {
+                Ok(t) => t,
+                Err(e) => {
+                    let msg = format!("Expected tuple: {}", e);
+                    return (0..n)
+                        .map(|_| Err(LightcurveError::PythonError(msg.clone())))
+                        .collect();
+                }
+            };
+
+            let all_times: Vec<f64> = tuple
+                .get_item(0)
+                .and_then(|v| v.extract())
+                .map_err(|e| LightcurveError::PythonError(e.to_string()))
+                .unwrap_or_default();
+            let mags_dict = match tuple.get_item(1).and_then(|v| {
+                v.downcast::<pyo3::types::PyDict>().map(|d| d.clone()).map_err(|e| e.into())
+            }) {
+                Ok(d) => d,
+                Err(e) => {
+                    let msg = format!("Expected mags dict: {}", e);
+                    return (0..n)
+                        .map(|_| Err(LightcurveError::PythonError(msg.clone())))
+                        .collect();
+                }
+            };
+            let ret_counts: Vec<i64> = tuple
+                .get_item(2)
+                .and_then(|v| v.extract())
+                .map_err(|e| LightcurveError::PythonError(e.to_string()))
+                .unwrap_or_default();
+
+            // Extract flat magnitude arrays per band.
+            let mut flat_mags: HashMap<String, Vec<f64>> = HashMap::new();
+            for (key, val) in mags_dict.iter() {
+                let band_name: String = key
+                    .extract()
+                    .map_err(|e| LightcurveError::PythonError(e.to_string()))
+                    .unwrap_or_default();
+                let mags: Vec<f64> = val
+                    .extract()
+                    .map_err(|e| LightcurveError::PythonError(e.to_string()))
+                    .unwrap_or_default();
+                flat_mags.insert(band_name, mags);
+            }
+
+            // Split flat arrays into per-transient evaluations.
+            let mut offset = 0usize;
+            (0..n)
+                .map(|i| {
+                    let count = ret_counts[i] as usize;
+                    let times_slice = all_times[offset..offset + count].to_vec();
+                    let mut mags_per_band = HashMap::new();
+                    for (band, flat) in &flat_mags {
+                        mags_per_band.insert(band.clone(), flat[offset..offset + count].to_vec());
+                    }
+                    offset += count;
+                    Ok(python_result_to_evaluation(times_slice, mags_per_band))
+                })
+                .collect()
+        })
+    }
+
+    /// Legacy dict-based batch evaluation path.
+    fn batch_evaluate_dicts(
+        &self,
+        instances: &[&TransientInstance],
+        times_mjd: &[&[f64]],
+        bands: &[&[Band]],
+    ) -> Vec<survey_sim::lightcurve::Result<LightcurveEvaluation>> {
+        Python::with_gil(|py| {
             let params_list = pyo3::types::PyList::empty(py);
             for (i, inst) in instances.iter().enumerate() {
                 let params_dict = pyo3::types::PyDict::new(py);
@@ -160,6 +320,7 @@ impl LightcurveModel for PythonCallbackModel {
                 }
                 let _ = params_dict.set_item("luminosity_distance", inst.d_l);
                 let _ = params_dict.set_item("redshift", inst.z);
+                let _ = params_dict.set_item("peak_abs_mag", inst.peak_abs_mag);
                 let obs_times: Vec<f64> = times_mjd[i].to_vec();
                 let obs_bands: Vec<String> = bands[i].iter().map(|b| b.to_string()).collect();
                 let _ = params_dict.set_item("_obs_times_mjd", obs_times);
@@ -168,7 +329,6 @@ impl LightcurveModel for PythonCallbackModel {
                 let _ = params_list.append(params_dict);
             }
 
-            // Call model.batch_predict(params_list)
             let result = match self
                 .callback
                 .call_method1(py, "batch_predict", (params_list,))
@@ -182,7 +342,6 @@ impl LightcurveModel for PythonCallbackModel {
                 }
             };
 
-            // Result is a list of (times, {band: mags}) tuples
             let py_list = match result.downcast_bound::<pyo3::types::PyList>(py) {
                 Ok(l) => l,
                 Err(e) => {

@@ -32,8 +32,31 @@ def _find_nvidia_libs():
     return libs
 
 
+def _try_cuda_module():
+    """Try to preload cusparse from CUDA_HOME (set by `module load cuda/...`)."""
+    cuda_home = os.environ.get("CUDA_HOME")
+    if not cuda_home:
+        return False
+    cusparse = os.path.join(cuda_home, "targets", "x86_64-linux", "lib", "libcusparse.so.12")
+    if os.path.isfile(cusparse):
+        try:
+            ctypes.CDLL(cusparse, mode=ctypes.RTLD_GLOBAL)
+            return True
+        except OSError:
+            pass
+    return False
+
+
 def setup():
-    """Preload nvidia CUDA libraries so JAX can find them via dlopen."""
+    """Preload nvidia CUDA libraries so JAX can find them via dlopen.
+
+    Strategy:
+    1. If CUDA_HOME is set (e.g. from `module load cuda/12.8.0`), preload cusparse from there.
+    2. Otherwise, scan pip-installed nvidia packages for shared libraries.
+    """
+    if _try_cuda_module():
+        return
+
     libs = _find_nvidia_libs()
     if not libs:
         return

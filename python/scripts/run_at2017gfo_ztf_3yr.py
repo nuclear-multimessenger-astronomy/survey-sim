@@ -3,6 +3,7 @@
 varying inclination as flat in cos(iota), for Mar 2018 - Mar 2021 (3 yr)."""
 import sys
 sys.path.insert(0, "/fred/oz480/mcoughli/simulations/survey-sim/python")
+sys.path.insert(0, "/fred/oz480/mcoughli/fiestaEM/src")
 import survey_sim.gpu_setup  # noqa: F401 — configure LD_LIBRARY_PATH for JAX GPU
 
 import glob

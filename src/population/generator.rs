@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use crate::types::{Cosmology, SkyCoord, TransientInstance, TransientType};
 
-use super::distributions::*;
+use super::distributions::{self, *};
 use super::PopulationGenerator;
 
 /// Kilonova population generator.
@@ -36,9 +36,10 @@ impl KilonovaPopulation {
 
 impl PopulationGenerator for KilonovaPopulation {
     fn generate(&self, n: usize, rng: &mut dyn rand::RngCore) -> Vec<TransientInstance> {
+        let envelope = distributions::max_dvdz(self.z_max, &self.cosmology);
         let mut instances = Vec::with_capacity(n);
         for _ in 0..n {
-            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, rng);
+            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
             let d_l = self.cosmology.luminosity_distance(z);
             let (ra, dec) = sample_isotropic_sky(rng);
             let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
@@ -63,7 +64,74 @@ impl PopulationGenerator for KilonovaPopulation {
                 ),
                 transient_type: TransientType::Kilonova,
                 model_params: params,
-                mw_extinction_av: sample_gaussian_clamped(0.1, 0.1, 0.0, 2.0, rng),
+                mw_extinction_av: 0.02, // high galactic latitude assumption
+                host_extinction_av: sample_gaussian_clamped(0.1, 0.2, 0.0, 3.0, rng),
+            });
+        }
+        instances
+    }
+
+    fn volumetric_rate(&self) -> f64 {
+        self.rate
+    }
+
+    fn transient_type(&self) -> TransientType {
+        TransientType::Kilonova
+    }
+}
+
+/// Metzger 1-zone kilonova population with fixed physical parameters.
+///
+/// Only redshift, sky position, explosion time, and extinction are randomized.
+/// The Metzger model computes per-band magnitudes via blackbody emission.
+pub struct FixedMetzgerKilonovaPopulation {
+    pub rate: f64,
+    pub z_max: f64,
+    pub mjd_min: f64,
+    pub mjd_max: f64,
+    pub cosmology: Cosmology,
+    pub mej: f64,
+    pub vej: f64,
+    pub kappa: f64,
+}
+
+impl FixedMetzgerKilonovaPopulation {
+    pub fn new(
+        rate: f64, z_max: f64, mjd_min: f64, mjd_max: f64,
+        mej: f64, vej: f64, kappa: f64,
+    ) -> Self {
+        Self {
+            rate, z_max, mjd_min, mjd_max,
+            cosmology: Cosmology::default(),
+            mej, vej, kappa,
+        }
+    }
+}
+
+impl PopulationGenerator for FixedMetzgerKilonovaPopulation {
+    fn generate(&self, n: usize, rng: &mut dyn rand::RngCore) -> Vec<TransientInstance> {
+        let envelope = distributions::max_dvdz(self.z_max, &self.cosmology);
+        let mut instances = Vec::with_capacity(n);
+        for _ in 0..n {
+            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
+            let d_l = self.cosmology.luminosity_distance(z);
+            let (ra, dec) = sample_isotropic_sky(rng);
+            let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
+
+            let mut params = HashMap::new();
+            params.insert("mej".to_string(), self.mej);
+            params.insert("vej".to_string(), self.vej);
+            params.insert("kappa".to_string(), self.kappa);
+
+            instances.push(TransientInstance {
+                coord: SkyCoord::new(ra, dec),
+                z,
+                d_l,
+                t_exp,
+                peak_abs_mag: 0.0, // Not used — Metzger computes physical magnitudes.
+                transient_type: TransientType::Kilonova,
+                model_params: params,
+                mw_extinction_av: 0.02, // high galactic latitude assumption
                 host_extinction_av: sample_gaussian_clamped(0.1, 0.2, 0.0, 3.0, rng),
             });
         }
@@ -108,9 +176,10 @@ impl PopulationGenerator for Bu2026KilonovaPopulation {
     fn generate(&self, n: usize, rng: &mut dyn rand::RngCore) -> Vec<TransientInstance> {
         use rand::Rng;
 
+        let envelope = distributions::max_dvdz(self.z_max, &self.cosmology);
         let mut instances = Vec::with_capacity(n);
         for _ in 0..n {
-            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, rng);
+            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
             let d_l = self.cosmology.luminosity_distance(z);
             let (ra, dec) = sample_isotropic_sky(rng);
             let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
@@ -138,7 +207,7 @@ impl PopulationGenerator for Bu2026KilonovaPopulation {
                 peak_abs_mag: 0.0,
                 transient_type: TransientType::Kilonova,
                 model_params: params,
-                mw_extinction_av: sample_gaussian_clamped(0.1, 0.1, 0.0, 2.0, rng),
+                mw_extinction_av: 0.02, // high galactic latitude assumption
                 host_extinction_av: sample_gaussian_clamped(0.1, 0.2, 0.0, 3.0, rng),
             });
         }
@@ -199,9 +268,10 @@ impl PopulationGenerator for FixedBu2026KilonovaPopulation {
     fn generate(&self, n: usize, rng: &mut dyn rand::RngCore) -> Vec<TransientInstance> {
         use rand::Rng;
 
+        let envelope = distributions::max_dvdz(self.z_max, &self.cosmology);
         let mut instances = Vec::with_capacity(n);
         for _ in 0..n {
-            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, rng);
+            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
             let d_l = self.cosmology.luminosity_distance(z);
             let (ra, dec) = sample_isotropic_sky(rng);
             let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
@@ -230,7 +300,7 @@ impl PopulationGenerator for FixedBu2026KilonovaPopulation {
                 peak_abs_mag: 0.0,
                 transient_type: TransientType::Kilonova,
                 model_params: params,
-                mw_extinction_av: sample_gaussian_clamped(0.1, 0.1, 0.0, 2.0, rng),
+                mw_extinction_av: 0.02, // high galactic latitude assumption
                 host_extinction_av: sample_gaussian_clamped(0.1, 0.2, 0.0, 3.0, rng),
             });
         }
@@ -271,9 +341,10 @@ impl SupernovaIaPopulation {
 
 impl PopulationGenerator for SupernovaIaPopulation {
     fn generate(&self, n: usize, rng: &mut dyn rand::RngCore) -> Vec<TransientInstance> {
+        let envelope = distributions::max_dvdz(self.z_max, &self.cosmology);
         let mut instances = Vec::with_capacity(n);
         for _ in 0..n {
-            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, rng);
+            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
             let d_l = self.cosmology.luminosity_distance(z);
             let (ra, dec) = sample_isotropic_sky(rng);
             let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
@@ -297,7 +368,7 @@ impl PopulationGenerator for SupernovaIaPopulation {
                 ),
                 transient_type: TransientType::SupernovaIa,
                 model_params: params,
-                mw_extinction_av: sample_gaussian_clamped(0.1, 0.1, 0.0, 2.0, rng),
+                mw_extinction_av: 0.02, // high galactic latitude assumption
                 host_extinction_av: sample_gaussian_clamped(0.2, 0.3, 0.0, 3.0, rng),
             });
         }
@@ -338,9 +409,10 @@ impl SupernovaIIPopulation {
 
 impl PopulationGenerator for SupernovaIIPopulation {
     fn generate(&self, n: usize, rng: &mut dyn rand::RngCore) -> Vec<TransientInstance> {
+        let envelope = distributions::max_dvdz(self.z_max, &self.cosmology);
         let mut instances = Vec::with_capacity(n);
         for _ in 0..n {
-            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, rng);
+            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
             let d_l = self.cosmology.luminosity_distance(z);
             let (ra, dec) = sample_isotropic_sky(rng);
             let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
@@ -363,7 +435,7 @@ impl PopulationGenerator for SupernovaIIPopulation {
                 ),
                 transient_type: TransientType::SupernovaII,
                 model_params: params,
-                mw_extinction_av: sample_gaussian_clamped(0.1, 0.1, 0.0, 2.0, rng),
+                mw_extinction_av: 0.02, // high galactic latitude assumption
                 host_extinction_av: sample_gaussian_clamped(0.3, 0.5, 0.0, 5.0, rng),
             });
         }
@@ -404,9 +476,10 @@ impl SupernovaIbcPopulation {
 
 impl PopulationGenerator for SupernovaIbcPopulation {
     fn generate(&self, n: usize, rng: &mut dyn rand::RngCore) -> Vec<TransientInstance> {
+        let envelope = distributions::max_dvdz(self.z_max, &self.cosmology);
         let mut instances = Vec::with_capacity(n);
         for _ in 0..n {
-            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, rng);
+            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
             let d_l = self.cosmology.luminosity_distance(z);
             let (ra, dec) = sample_isotropic_sky(rng);
             let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
@@ -427,7 +500,7 @@ impl PopulationGenerator for SupernovaIbcPopulation {
                 ),
                 transient_type: TransientType::SupernovaIbc,
                 model_params: params,
-                mw_extinction_av: sample_gaussian_clamped(0.1, 0.1, 0.0, 2.0, rng),
+                mw_extinction_av: 0.02, // high galactic latitude assumption
                 host_extinction_av: sample_gaussian_clamped(0.2, 0.3, 0.0, 3.0, rng),
             });
         }
@@ -468,9 +541,10 @@ impl TdePopulation {
 
 impl PopulationGenerator for TdePopulation {
     fn generate(&self, n: usize, rng: &mut dyn rand::RngCore) -> Vec<TransientInstance> {
+        let envelope = distributions::max_dvdz(self.z_max, &self.cosmology);
         let mut instances = Vec::with_capacity(n);
         for _ in 0..n {
-            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, rng);
+            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
             let d_l = self.cosmology.luminosity_distance(z);
             let (ra, dec) = sample_isotropic_sky(rng);
             let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
@@ -493,7 +567,7 @@ impl PopulationGenerator for TdePopulation {
                 ),
                 transient_type: TransientType::Tde,
                 model_params: params,
-                mw_extinction_av: sample_gaussian_clamped(0.1, 0.1, 0.0, 2.0, rng),
+                mw_extinction_av: 0.02, // high galactic latitude assumption
                 host_extinction_av: sample_gaussian_clamped(0.1, 0.1, 0.0, 1.0, rng),
             });
         }
@@ -534,9 +608,10 @@ impl AfterglowPopulation {
 
 impl PopulationGenerator for AfterglowPopulation {
     fn generate(&self, n: usize, rng: &mut dyn rand::RngCore) -> Vec<TransientInstance> {
+        let envelope = distributions::max_dvdz(self.z_max, &self.cosmology);
         let mut instances = Vec::with_capacity(n);
         for _ in 0..n {
-            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, rng);
+            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
             let d_l = self.cosmology.luminosity_distance(z);
             let (ra, dec) = sample_isotropic_sky(rng);
             let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
@@ -560,7 +635,7 @@ impl PopulationGenerator for AfterglowPopulation {
                 ),
                 transient_type: TransientType::Afterglow,
                 model_params: params,
-                mw_extinction_av: sample_gaussian_clamped(0.1, 0.1, 0.0, 2.0, rng),
+                mw_extinction_av: 0.02, // high galactic latitude assumption
                 host_extinction_av: sample_gaussian_clamped(0.1, 0.2, 0.0, 2.0, rng),
             });
         }

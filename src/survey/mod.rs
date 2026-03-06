@@ -1,5 +1,7 @@
 pub mod argus;
+pub mod observing_scenario;
 pub mod rubin;
+pub mod too;
 pub mod ztf;
 
 use crate::instrument::InstrumentConfig;
@@ -212,5 +214,52 @@ impl SurveyStore {
     /// Get all observations (for iteration).
     pub fn observations(&self) -> &[SurveyObservation] {
         &self.observations
+    }
+
+    /// Add ToO observations to this store, rebuilding the spatial index.
+    ///
+    /// Used to inject follow-up observations from a `TooStrategy` into an
+    /// existing survey schedule.
+    pub fn add_observations(&mut self, new_obs: Vec<SurveyObservation>) {
+        if new_obs.is_empty() {
+            return;
+        }
+        let nside = self.spatial_index.nside();
+        self.observations.extend(new_obs);
+
+        // Rebuild spatial index and metadata.
+        let coords: Vec<(f64, f64)> = self
+            .observations
+            .iter()
+            .map(|o| (o.coord.ra, o.coord.dec))
+            .collect();
+        self.spatial_index = SpatialIndex::new(&coords, nside);
+
+        self.mjd_min = self
+            .observations
+            .iter()
+            .map(|o| o.mjd)
+            .fold(f64::INFINITY, f64::min);
+        self.mjd_max = self
+            .observations
+            .iter()
+            .map(|o| o.mjd)
+            .fold(f64::NEG_INFINITY, f64::max);
+        self.duration_years = (self.mjd_max - self.mjd_min) / 365.25;
+
+        let mut band_set = std::collections::HashSet::new();
+        for obs in &self.observations {
+            band_set.insert(obs.band.0.clone());
+        }
+        self.bands = band_set.into_iter().map(Band).collect();
+    }
+
+    /// Create a SurveyStore from ToO observations only (no base survey).
+    pub fn from_too(
+        observations: Vec<SurveyObservation>,
+        nside: u32,
+        instrument: InstrumentConfig,
+    ) -> Self {
+        Self::new(observations, nside).with_instrument(instrument)
     }
 }

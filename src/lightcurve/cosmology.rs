@@ -58,6 +58,24 @@ impl Cosmology {
         c_over_h_gpc * d_c_gpc * d_c_gpc
     }
 
+    /// Invert luminosity_distance to find redshift from distance (bisection).
+    pub fn redshift_from_distance(&self, d_l_mpc: f64) -> f64 {
+        if d_l_mpc <= 0.0 {
+            return 0.0;
+        }
+        let mut z_lo = 0.0;
+        let mut z_hi = 20.0;
+        for _ in 0..100 {
+            let z_mid = (z_lo + z_hi) / 2.0;
+            if self.luminosity_distance(z_mid) < d_l_mpc {
+                z_lo = z_mid;
+            } else {
+                z_hi = z_mid;
+            }
+        }
+        (z_lo + z_hi) / 2.0
+    }
+
     /// Comoving volume out to redshift z in Gpc^3 (full sky).
     pub fn comoving_volume(&self, z: f64) -> f64 {
         let d_c = self.comoving_distance(z) / 1000.0; // Gpc
@@ -87,6 +105,10 @@ pub fn extinction_in_band_with_instrument(
         return a_v * inst.extinction_ratio(band);
     }
     let ratio = match band {
+        // UV (Cardelli+1989 R_V=3.1 extrapolation)
+        "FUV" => 8.4,
+        "NUV" => 8.0,
+        // Optical/NIR
         "u" | "U" => 1.56,
         "g" | "B" | "bessellb" => 1.31,
         "r" | "V" | "bessellv" => 1.0,

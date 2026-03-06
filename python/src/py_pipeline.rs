@@ -68,6 +68,8 @@ impl PySimulationPipeline {
         for pop_obj in &self.populations {
             if let Ok(kn) = pop_obj.extract::<PyRef<PyKilonovaPopulation>>(py) {
                 rust_populations.push(Box::new(kn.to_generator(mjd_min, mjd_max)));
+            } else if let Ok(fm) = pop_obj.extract::<PyRef<PyFixedMetzgerKilonovaPopulation>>(py) {
+                rust_populations.push(Box::new(fm.to_generator(mjd_min, mjd_max)));
             } else if let Ok(bu) = pop_obj.extract::<PyRef<PyBu2026KilonovaPopulation>>(py) {
                 rust_populations.push(Box::new(bu.to_generator(mjd_min, mjd_max)));
             } else if let Ok(fbu) = pop_obj.extract::<PyRef<PyFixedBu2026KilonovaPopulation>>(py) {
@@ -160,6 +162,7 @@ fn run_pipeline_borrowed(
 ) -> PipelineResult {
     use rayon::prelude::*;
     use rand::SeedableRng;
+    use std::time::Instant;
 
     let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
     let _cosmo = survey_sim::types::Cosmology::default();
@@ -178,6 +181,7 @@ fn run_pipeline_borrowed(
         };
 
         let time_window = 100.0;
+        let t_phase1 = Instant::now();
 
         // Phase 1: Spatial matching (parallel).
         let matched: Vec<(usize, Vec<usize>)> = instances
@@ -191,6 +195,10 @@ fn run_pipeline_borrowed(
             })
             .filter(|(_, obs)| !obs.is_empty())
             .collect();
+
+        eprintln!("[pipeline] Phase 1 spatial match: {:.1}s, {} matched of {} generated",
+            t_phase1.elapsed().as_secs_f64(), matched.len(), instances.len());
+        let t_phase2 = Instant::now();
 
         // Phase 2: Lightcurve evaluation.
         let evaluations: Vec<(usize, Vec<usize>, survey_sim::lightcurve::LightcurveEvaluation)> =
@@ -246,16 +254,44 @@ fn run_pipeline_borrowed(
                     .collect()
             };
 
+        eprintln!("[pipeline] Phase 2 lightcurve eval: {:.1}s, {} evaluations",
+            t_phase2.elapsed().as_secs_f64(), evaluations.len());
+        let t_phase3 = Instant::now();
+
         // Phase 3: Detection (parallel).
+        let gal_lat_cut = criteria.min_galactic_lat;
+        let spec_k = criteria.spectroscopic_completeness_k;
+        let spec_m0 = criteria.spectroscopic_completeness_m0;
         let detection_results: Vec<(usize, survey_sim::detection::DetectionResult)> = evaluations
             .par_iter()
             .map(|(idx, obs_indices, eval)| {
                 let obs_refs: Vec<&survey_sim::survey::SurveyObservation> =
                     obs_indices.iter().map(|&oi| survey.get(oi)).collect();
-                let result = survey_sim::detection::evaluate_detection(eval, &obs_refs, criteria);
+                let mut result = survey_sim::detection::evaluate_detection(eval, &obs_refs, criteria);
+                // Apply galactic latitude cut on the transient sky position.
+                if gal_lat_cut > 0.0 && result.detected {
+                    let b = instances[*idx].coord.galactic_lat().abs();
+                    if b < gal_lat_cut {
+                        result.detected = false;
+                    }
+                }
+                // Apply spectroscopic completeness (magnitude-dependent classification probability).
+                if spec_k > 0.0 && result.detected {
+                    if let Some(peak) = result.peak_mag {
+                        let p = 1.0 / (1.0 + (spec_k * (peak - spec_m0)).exp());
+                        // Deterministic pseudo-random from transient index + seed.
+                        // Use a simple hash: fract(idx * phi) where phi = golden ratio.
+                        let hash = ((*idx as f64 + 0.5) * std::f64::consts::FRAC_1_PI * 7.31).fract();
+                        if hash > p {
+                            result.detected = false;
+                        }
+                    }
+                }
                 (*idx, result)
             })
             .collect();
+
+        eprintln!("[pipeline] Phase 3 detection: {:.1}s", t_phase3.elapsed().as_secs_f64());
 
         let n_detected = detection_results.iter().filter(|(_, d)| d.detected).count();
         let overall_eff = n_detected as f64 / n_transients.max(1) as f64;
@@ -344,9 +380,150 @@ impl PyRateSummary {
     }
 }
 
+/// Python wrapper for ToO simulation results.
+#[pyclass]
+#[pyo3(name = "TooSimulationResult")]
+pub struct PyTooSimulationResult {
+    #[pyo3(get)]
+    pub strategy_name: String,
+    #[pyo3(get)]
+    pub n_events: usize,
+    #[pyo3(get)]
+    pub n_detected: usize,
+    #[pyo3(get)]
+    pub efficiency: f64,
+    /// Per-event detection flags (parallel to input events).
+    #[pyo3(get)]
+    pub detected: Vec<bool>,
+    /// Per-event distances in Mpc.
+    #[pyo3(get)]
+    pub distances: Vec<f64>,
+    /// Per-event area_90 in sq deg.
+    #[pyo3(get)]
+    pub areas_90: Vec<f64>,
+    /// Per-event number of detections.
+    #[pyo3(get)]
+    pub n_detections_per_event: Vec<usize>,
+}
+
+#[pymethods]
+impl PyTooSimulationResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "TooSimulationResult(strategy='{}', events={}, detected={}, efficiency={:.3})",
+            self.strategy_name, self.n_events, self.n_detected, self.efficiency,
+        )
+    }
+}
+
+/// Run a targeted ToO simulation for GW events.
+///
+/// For each BNS/NSBH event, places a kilonova at the event's true position
+/// and evaluates detection with the given ToO strategy.
+///
+/// Args:
+///     events: List of GwEvent objects from load_gw_events().
+///     strategy: Strategy name ("rubin_gold", "rubin_silver", "ztf", "ultrasat", "uvex").
+///     population: A population generator for KN parameters.
+///     model: A lightcurve model (e.g., MetzgerKNModel).
+///     detection: Detection criteria.
+///     trigger_mjd: MJD to use as the explosion/trigger time (default: 60000.0).
+///     include_bbh: Whether to include BBH events (default: false).
+#[pyfunction]
+#[pyo3(signature = (events, strategy, population, model, detection, trigger_mjd=60000.0, include_bbh=false))]
+pub fn run_too_simulation(
+    py: Python<'_>,
+    events: Vec<PyRef<crate::py_survey::PyGwEvent>>,
+    strategy: &str,
+    population: PyObject,
+    model: PyObject,
+    detection: PyRef<PyDetectionCriteria>,
+    trigger_mjd: f64,
+    include_bbh: bool,
+) -> PyResult<PyTooSimulationResult> {
+    // Convert GwEvents.
+    let gw_events: Vec<survey_sim::survey::observing_scenario::GwEvent> =
+        events.iter().map(|e| e.inner.clone()).collect();
+
+    // Get the strategy.
+    let too_strategy = survey_sim::survey::too::builtin_strategy(strategy)
+        .ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Unknown ToO strategy '{}'. Available: rubin_gold, rubin_silver, ztf, ultrasat, uvex",
+                strategy
+            ))
+        })?;
+
+    // Build Rust population.
+    let mjd_min = trigger_mjd - 1.0;
+    let mjd_max = trigger_mjd + 365.25;
+    let rust_pop: Box<dyn survey_sim::population::PopulationGenerator> =
+        if let Ok(kn) = population.extract::<PyRef<PyKilonovaPopulation>>(py) {
+            Box::new(kn.to_generator(mjd_min, mjd_max))
+        } else if let Ok(fm) = population.extract::<PyRef<PyFixedMetzgerKilonovaPopulation>>(py) {
+            Box::new(fm.to_generator(mjd_min, mjd_max))
+        } else if let Ok(bu) = population.extract::<PyRef<PyBu2026KilonovaPopulation>>(py) {
+            Box::new(bu.to_generator(mjd_min, mjd_max))
+        } else if let Ok(fbu) = population.extract::<PyRef<PyFixedBu2026KilonovaPopulation>>(py) {
+            Box::new(fbu.to_generator(mjd_min, mjd_max))
+        } else {
+            return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                "Unsupported population type for ToO simulation",
+            ));
+        };
+
+    // Build Rust model.
+    let rust_model: Box<dyn survey_sim::lightcurve::LightcurveModel> =
+        if let Ok(kn_model) = model.extract::<PyRef<PyMetzgerKNModel>>(py) {
+            Box::new(kn_model.to_model())
+        } else {
+            Box::new(PythonCallbackModel::new(model.clone_ref(py)))
+        };
+
+    let criteria = detection.inner.clone();
+
+    // Run the simulation (release GIL for Rust models).
+    let result = if rust_model.requires_gil() {
+        survey_sim::pipeline::too::run_too_simulation(
+            &gw_events,
+            too_strategy.as_ref(),
+            rust_pop.as_ref(),
+            rust_model.as_ref(),
+            &criteria,
+            trigger_mjd,
+            include_bbh,
+        )
+    } else {
+        py.allow_threads(|| {
+            survey_sim::pipeline::too::run_too_simulation(
+                &gw_events,
+                too_strategy.as_ref(),
+                rust_pop.as_ref(),
+                rust_model.as_ref(),
+                &criteria,
+                trigger_mjd,
+                include_bbh,
+            )
+        })
+    };
+
+    Ok(PyTooSimulationResult {
+        strategy_name: result.strategy_name,
+        n_events: result.n_events,
+        n_detected: result.n_detected,
+        efficiency: result.efficiency,
+        detected: result.event_results.iter().map(|r| r.detection.detected).collect(),
+        distances: result.event_results.iter().map(|r| r.event.distance_mpc).collect(),
+        areas_90: result.event_results.iter().map(|r| r.event.area_90).collect(),
+        n_detections_per_event: result.event_results.iter().map(|r| r.detection.n_detections).collect(),
+    })
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySimulationPipeline>()?;
     m.add_class::<PySimulationResult>()?;
     m.add_class::<PyRateSummary>()?;
+    m.add_class::<PyTooSimulationResult>()?;
+    m.add_function(wrap_pyfunction!(run_too_simulation, m)?)?;
     Ok(())
 }

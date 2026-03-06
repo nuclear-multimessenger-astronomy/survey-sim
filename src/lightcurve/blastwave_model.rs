@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use blastwave::afterglow::afterglow::Afterglow;
 use blastwave::afterglow::eats::EATS;
-use blastwave::afterglow::models::Dict;
+use blastwave::afterglow::forward_grid::ForwardGrid;
+use blastwave::afterglow::models::{Dict, get_radiation_model};
 use blastwave::constants::{C_SPEED, MASS_P, MPC};
 use blastwave::hydro::config::{JetConfig, SpreadMode};
 use blastwave::hydro::sim_box::SimBox;
@@ -68,8 +68,9 @@ fn build_jet_config(
     p_rs: f64,
     eps_e_rs: f64,
     eps_b_rs: f64,
+    tmax: f64,
 ) -> JetConfig {
-    let theta_edge = forward_jet_res(theta_c, 129);
+    let theta_edge = forward_jet_res(theta_c, 33);
     let ncells = theta_edge.len() - 1;
 
     // Cell centres from edges.
@@ -95,7 +96,6 @@ fn build_jet_config(
 
     // Convert (Eiso, Gamma) -> (Eb, Mej, Msw, R) at tmin.
     let tmin = 10.0;
-    let tmax = 1e8;
     let nism = n0;
 
     let mut eb = Vec::with_capacity(ncells);
@@ -200,108 +200,137 @@ impl LightcurveModel for BlastwaveModel {
         let d_mpc = instance.d_l;
         let d_cm = d_mpc * MPC;
 
+        // Compute tmax from the latest observation time (with margin).
+        let t_max_obs = times_mjd
+            .iter()
+            .map(|&t| (t - instance.t_exp) * SECONDS_PER_DAY)
+            .fold(0.0_f64, f64::max);
+        // Cap at 1e6 s (~12 days) — optical afterglows fade below Argus depth well before this.
+        let tmax = (t_max_obs * 2.0).max(1e5).min(1e6);
+
         // Build jet configuration and solve hydrodynamics.
         let config = build_jet_config(
-            eiso, gamma_0, theta_c, n0, p, eps_e, eps_b, p_rs, eps_e_rs, eps_b_rs,
+            eiso, gamma_0, theta_c, n0, p, eps_e, eps_b, p_rs, eps_e_rs, eps_b_rs, tmax,
         );
 
         let mut sim_box = SimBox::new(&config);
         sim_box.solve_pde();
-        sim_box.solve_reverse_shock();
 
         let theta_data = sim_box.get_theta();
         let t_data = &sim_box.ts;
         let y_data = &sim_box.ys;
         let rs_data = sim_box.ys_rs.as_ref();
 
-        // Configure afterglow radiation.
-        let mut afterglow = Afterglow::new();
+        let eats = EATS::new(theta_data, t_data);
+        let tool = sim_box.tool();
 
+        let radiation_model = get_radiation_model(&self.radiation_model)
+            .ok_or_else(|| LightcurveError::InvalidParameters(
+                format!("unknown radiation model: {}", self.radiation_model),
+            ))?;
+
+        // FS radiation parameters.
         let mut ag_params = Dict::new();
         ag_params.insert("eps_e".into(), eps_e);
         ag_params.insert("eps_b".into(), eps_b);
         ag_params.insert("p".into(), p);
-        ag_params.insert("theta_v".into(), theta_v);
-        ag_params.insert("d".into(), d_cm);
-        ag_params.insert("z".into(), z);
-        afterglow.config_parameters(ag_params);
 
-        let mut rs_params = Dict::new();
-        rs_params.insert("eps_e".into(), eps_e_rs);
-        rs_params.insert("eps_b".into(), eps_b_rs);
-        rs_params.insert("p".into(), p_rs);
-        rs_params.insert("theta_v".into(), theta_v);
-        rs_params.insert("d".into(), d_cm);
-        rs_params.insert("z".into(), z);
-        afterglow.config_rs_parameters(rs_params);
+        // RS radiation parameters.
+        let mut rs_ag_params = Dict::new();
+        rs_ag_params.insert("eps_e".into(), eps_e_rs);
+        rs_ag_params.insert("eps_b".into(), eps_b_rs);
+        rs_ag_params.insert("p".into(), p_rs);
 
-        afterglow.config_intensity(&self.radiation_model);
-
-        let eats = EATS::new(theta_data, t_data);
-
-        // Compute apparent magnitudes at each observation time/band.
-        let mut apparent_mags: HashMap<String, Vec<f64>> = HashMap::new();
-        let mut out_times: Vec<f64> = Vec::with_capacity(times_mjd.len());
-
+        // Group observations by band/frequency.
+        // For each unique frequency, collect (index, t_seconds) pairs.
+        let mut freq_groups: HashMap<String, Vec<(usize, f64, f64)>> = HashMap::new();
         for (i, (&t_mjd, band)) in times_mjd.iter().zip(bands.iter()).enumerate() {
             let band_name = band.to_string();
-            let nu = match self.band_frequencies.get(&band_name) {
-                Some(&f) => f,
-                None => continue, // skip unknown bands
-            };
-
-            // Convert MJD to seconds since explosion.
-            let t_s = (t_mjd - instance.t_exp) * SECONDS_PER_DAY;
-            if t_s <= 0.0 {
-                // Before explosion — set to very faint.
-                apparent_mags
+            if self.band_frequencies.contains_key(&band_name) {
+                let t_s = (t_mjd - instance.t_exp) * SECONDS_PER_DAY;
+                freq_groups
                     .entry(band_name)
-                    .or_insert_with(Vec::new)
-                    .push(99.0);
-                if i < out_times.len() || out_times.is_empty() || *out_times.last().unwrap_or(&0.0) != t_mjd {
-                    out_times.push(t_mjd);
+                    .or_default()
+                    .push((i, t_mjd, t_s));
+            }
+        }
+
+        // Pre-allocate output arrays.
+        let mut apparent_mags: HashMap<String, Vec<f64>> = HashMap::new();
+        let mut out_times: Vec<f64> = Vec::with_capacity(times_mjd.len());
+        // We'll build a flat (index, mag, t_mjd) vec and sort by original index.
+        let mut results: Vec<(usize, String, f64, f64)> = Vec::with_capacity(times_mjd.len());
+
+        let flux_factor = (1.0 + z) / (4.0 * std::f64::consts::PI * d_cm * d_cm);
+
+        for (band_name, obs) in &freq_groups {
+            let nu = self.band_frequencies[band_name];
+            let nu_z = nu * (1.0 + z);
+
+            // Separate pre-explosion and beyond-tmax observations.
+            let mut valid: Vec<(usize, f64, f64)> = Vec::new(); // (orig_idx, t_mjd, t_s)
+            for &(idx, t_mjd, t_s) in obs {
+                if t_s <= 0.0 || t_s > tmax {
+                    results.push((idx, band_name.clone(), 99.0, t_mjd));
+                } else {
+                    valid.push((idx, t_mjd, t_s));
                 }
+            }
+
+            if valid.is_empty() {
                 continue;
             }
 
-            // Compute total luminosity (FS + RS) in erg/s/Hz.
-            let lum = if let Some(rs) = rs_data {
-                afterglow.luminosity_total(
-                    t_s, nu, 1e-2, 50, true, &eats, y_data, rs, t_data, theta_data,
-                    sim_box.tool(),
-                )
+            // Sort query times for batch evaluation.
+            let mut sorted_queries: Vec<(usize, f64, f64)> = valid.clone();
+            sorted_queries.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
+            let t_sorted: Vec<f64> = sorted_queries.iter().map(|q| q.2 / (1.0 + z)).collect();
+
+            // Build FS forward grid and evaluate batch.
+            let fs_grid = ForwardGrid::precompute(
+                nu_z, theta_v, y_data, t_data, theta_data,
+                &eats, tool, &ag_params, radiation_model,
+            );
+            let fs_lum = fs_grid.luminosity_batch(&t_sorted);
+
+            // Build RS forward grid if available.
+            let rs_lum = if let Some(rs) = rs_data {
+                let rs_grid = ForwardGrid::precompute_reverse(
+                    nu_z, theta_v, y_data, rs, t_data, theta_data,
+                    &eats, tool, &rs_ag_params, radiation_model,
+                );
+                rs_grid.luminosity_batch(&t_sorted)
             } else {
-                afterglow.luminosity(
-                    t_s, nu, 1e-2, 50, true, &eats, y_data, t_data, theta_data,
-                    sim_box.tool(),
-                )
+                vec![0.0; t_sorted.len()]
             };
 
-            // Convert luminosity (erg/s/Hz) to flux density (mJy).
-            // F_nu = L_nu * (1+z) / (4 * pi * d_L^2)  [erg/s/cm²/Hz]
-            // F_mJy = F_nu / 1e-26
-            let f_nu = lum * (1.0 + z) / (4.0 * std::f64::consts::PI * d_cm * d_cm);
-            let f_mjy = f_nu / 1e-26;
+            // Convert luminosities to magnitudes.
+            for (q_idx, &(orig_idx, t_mjd, _t_s)) in sorted_queries.iter().enumerate() {
+                let lum = fs_lum[q_idx] + rs_lum[q_idx];
+                let f_nu = lum * flux_factor;
+                let f_mjy = f_nu / 1e-26;
 
-            // Convert to AB magnitude.
-            let mag = if f_mjy > 0.0 {
-                // m_AB = 23.9 - 2.5 * log10(F_mJy)
-                // (since AB zero-point is 3631 Jy = 3.631e6 mJy)
-                23.9 - 2.5 * f_mjy.log10()
-            } else {
-                99.0 // undetectable
-            };
+                let mag = if f_mjy > 0.0 {
+                    23.9 - 2.5 * f_mjy.log10()
+                } else {
+                    99.0
+                };
 
-            // Apply host extinction.
-            let a_band_host = extinction_in_band(av, &band_name);
-            // Apply MW extinction.
-            let a_band_mw = extinction_in_band(instance.mw_extinction_av, &band_name);
-            let mag_ext = mag + a_band_host + a_band_mw;
+                let a_band_host = extinction_in_band(av, band_name);
+                let a_band_mw = extinction_in_band(instance.mw_extinction_av, band_name);
+                let mag_ext = mag + a_band_host + a_band_mw;
 
+                results.push((orig_idx, band_name.clone(), mag_ext, t_mjd));
+            }
+        }
+
+        // Sort by original observation index and build output.
+        results.sort_by_key(|r| r.0);
+        for (_idx, band_name, mag, t_mjd) in results {
             apparent_mags
                 .entry(band_name)
-                .or_insert_with(Vec::new)
-                .push(mag_ext);
+                .or_default()
+                .push(mag);
             out_times.push(t_mjd);
         }
 

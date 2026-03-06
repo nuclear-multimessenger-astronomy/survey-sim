@@ -37,6 +37,26 @@ pub struct DetectionCriteria {
     pub min_rise_rate: f64,
     /// Minimum fade rate in mag/day (positive slope). Default: 0.3 mag/day.
     pub min_fade_rate: f64,
+    /// Minimum detections before peak brightness. Default: 0 (no requirement).
+    /// DR2-style cuts typically require >=1 pre-peak detection.
+    pub min_pre_peak_detections: usize,
+    /// Minimum detections after peak brightness. Default: 0.
+    pub min_post_peak_detections: usize,
+    /// Minimum phase range in days (last - first detection relative to peak).
+    /// Default: 0.0. DR2 requires coverage from roughly -10 to +40 days.
+    pub min_phase_range_days: f64,
+    /// Minimum absolute galactic latitude |b| in degrees. Default: 0.0.
+    /// Set to e.g. 7.0 to exclude the galactic plane (ZTF avoids |b| < 7°).
+    /// This is checked against the transient sky position, not the observations.
+    pub min_galactic_lat: f64,
+    /// Spectroscopic completeness logistic steepness. Default: 0.0 (disabled).
+    /// When > 0, applies a magnitude-dependent classification probability:
+    ///   P(classified) = 1 / (1 + exp(k * (peak_mag - m0)))
+    /// Fitted to ZTF BTS (Perley 2020): k≈2.4, m0≈19.5–19.9.
+    /// k=2.378, m0=19.9 reproduces DR2 SN Ia counts within ~2%.
+    pub spectroscopic_completeness_k: f64,
+    /// Spectroscopic completeness logistic midpoint magnitude. Default: 19.46.
+    pub spectroscopic_completeness_m0: f64,
 }
 
 impl Default for DetectionCriteria {
@@ -53,6 +73,12 @@ impl Default for DetectionCriteria {
             require_fast_transient: false,
             min_rise_rate: 1.0,
             min_fade_rate: 0.3,
+            min_pre_peak_detections: 0,
+            min_post_peak_detections: 0,
+            min_phase_range_days: 0.0,
+            min_galactic_lat: 0.0,
+            spectroscopic_completeness_k: 0.0,
+            spectroscopic_completeness_m0: 19.46,
         }
     }
 }
@@ -77,6 +103,12 @@ impl DetectionCriteria {
             require_fast_transient: true,
             min_rise_rate: 1.0,
             min_fade_rate: 0.3,
+            min_pre_peak_detections: 0,
+            min_post_peak_detections: 0,
+            min_phase_range_days: 0.0,
+            min_galactic_lat: 0.0,
+            spectroscopic_completeness_k: 0.0,
+            spectroscopic_completeness_m0: 19.46,
         }
     }
 }
@@ -242,6 +274,18 @@ pub struct DetectionResult {
     pub best_fade_rate: Option<f64>,
     /// Whether the source qualifies as a fast transient.
     pub is_fast_transient: bool,
+    /// MJD of peak brightness (minimum apparent magnitude across all detected bands).
+    pub peak_mjd: Option<f64>,
+    /// Peak apparent magnitude (brightest detection).
+    pub peak_mag: Option<f64>,
+    /// Number of detections before peak brightness.
+    pub n_pre_peak: usize,
+    /// Number of detections after peak brightness.
+    pub n_post_peak: usize,
+    /// Phase of earliest detection relative to peak (days, negative = before peak).
+    pub phase_min_days: Option<f64>,
+    /// Phase of latest detection relative to peak (days, positive = after peak).
+    pub phase_max_days: Option<f64>,
 }
 
 /// Evaluate detection for a transient given its lightcurve and overlapping observations.
@@ -310,6 +354,68 @@ pub fn evaluate_detection(
 
     let first_detection_mjd = detection_mjds.iter().copied().reduce(f64::min);
     let last_detection_mjd = detection_mjds.iter().copied().reduce(f64::max);
+
+    // Find peak (brightest detection) across all bands.
+    let mut peak_mjd: Option<f64> = None;
+    let mut peak_mag: Option<f64> = None;
+    // Collect all (mjd, mag) pairs for detected observations.
+    let mut detected_phot: Vec<(f64, f64)> = Vec::new();
+
+    for (i, obs) in observations.iter().enumerate() {
+        let band_name = &obs.band.0;
+        if let Some(mags) = evaluation.apparent_mags.get(band_name) {
+            if i < mags.len() {
+                let app_mag = mags[i];
+                let depth_secondary = obs.five_sigma_depth
+                    + if criteria.snr_threshold_secondary < criteria.snr_threshold
+                        && criteria.snr_threshold_secondary > 0.0
+                    {
+                        2.5 * (criteria.snr_threshold / criteria.snr_threshold_secondary).log10()
+                    } else {
+                        0.0
+                    };
+                if app_mag < depth_secondary {
+                    detected_phot.push((obs.mjd, app_mag));
+                    match peak_mag {
+                        Some(prev) if app_mag < prev => {
+                            peak_mag = Some(app_mag);
+                            peak_mjd = Some(obs.mjd);
+                        }
+                        None => {
+                            peak_mag = Some(app_mag);
+                            peak_mjd = Some(obs.mjd);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    // Count pre/post peak detections and phase range.
+    let mut n_pre_peak = 0usize;
+    let mut n_post_peak = 0usize;
+    let mut phase_min_days: Option<f64> = None;
+    let mut phase_max_days: Option<f64> = None;
+
+    if let Some(pk_mjd) = peak_mjd {
+        for &(mjd, _) in &detected_phot {
+            let phase = mjd - pk_mjd;
+            if phase < -0.01 {
+                n_pre_peak += 1;
+            } else if phase > 0.01 {
+                n_post_peak += 1;
+            }
+            phase_min_days = Some(match phase_min_days {
+                Some(prev) => prev.min(phase),
+                None => phase,
+            });
+            phase_max_days = Some(match phase_max_days {
+                Some(prev) => prev.max(phase),
+                None => phase,
+            });
+        }
+    }
 
     // Compute rise/decay rates per band (boom algorithm).
     let mut best_rise_rate: Option<f64> = None;
@@ -399,12 +505,24 @@ pub fn evaluate_detection(
     // Check primary SNR tier.
     let primary_ok = n_detections_primary >= criteria.min_detections_primary;
 
+    // Phase coverage check.
+    let phase_range = match (phase_min_days, phase_max_days) {
+        (Some(mn), Some(mx)) => mx - mn,
+        _ => 0.0,
+    };
+    let phase_range_ok = phase_range >= criteria.min_phase_range_days;
+    let pre_peak_ok = n_pre_peak >= criteria.min_pre_peak_detections;
+    let post_peak_ok = n_post_peak >= criteria.min_post_peak_detections;
+
     let mut detected = n_detections >= criteria.min_detections
         && bands_detected.len() >= criteria.min_bands
         && (criteria.min_per_band == 0 || per_band_ok)
         && timespan_ok
         && time_separation_ok
-        && primary_ok;
+        && primary_ok
+        && pre_peak_ok
+        && post_peak_ok
+        && phase_range_ok;
 
     // Apply fast transient requirement.
     if criteria.require_fast_transient && detected {
@@ -422,6 +540,12 @@ pub fn evaluate_detection(
         best_rise_rate,
         best_fade_rate,
         is_fast_transient: is_fast,
+        peak_mjd,
+        peak_mag,
+        n_pre_peak,
+        n_post_peak,
+        phase_min_days,
+        phase_max_days,
     }
 }
 

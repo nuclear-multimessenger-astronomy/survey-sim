@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::types::{SkyCoord, TransientInstance, TransientType};
 
-use super::distributions::{sample_explosion_time, sample_gaussian_clamped, sample_isotropic_sky};
+use super::distributions::{sample_explosion_time, sample_isotropic_sky};
 use super::PopulationGenerator;
 
 /// A single row from the GRB afterglow parameter catalog CSV.
@@ -130,7 +130,7 @@ impl PopulationGenerator for GrbPopulation {
                 peak_abs_mag: row.peak_mag, // informational; blastwave computes mags from physics
                 transient_type: TransientType::Afterglow,
                 model_params: params,
-                mw_extinction_av: sample_gaussian_clamped(0.1, 0.1, 0.0, 2.0, rng),
+                mw_extinction_av: 0.02, // high galactic latitude assumption
                 host_extinction_av: row.av,
             });
         }

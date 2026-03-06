@@ -26,6 +26,24 @@ impl SkyCoord {
         self.dec.to_radians()
     }
 
+    /// Galactic latitude b in degrees [-90, 90].
+    ///
+    /// Uses the standard ICRS → Galactic transformation with the NGP at
+    /// (ra, dec) = (192.85948°, 27.12825°) and l_NCP = 122.93192°.
+    pub fn galactic_lat(&self) -> f64 {
+        let d2r = std::f64::consts::PI / 180.0;
+        // North Galactic Pole in ICRS
+        let ra_ngp = 192.85948 * d2r;
+        let dec_ngp = 27.12825 * d2r;
+
+        let ra = self.ra * d2r;
+        let dec = self.dec * d2r;
+
+        let sin_b = dec.sin() * dec_ngp.sin()
+            + dec.cos() * dec_ngp.cos() * (ra - ra_ngp).cos();
+        sin_b.clamp(-1.0, 1.0).asin() / d2r
+    }
+
     /// Angular separation to another coordinate in degrees.
     pub fn separation(&self, other: &SkyCoord) -> f64 {
         let d2r = std::f64::consts::PI / 180.0;

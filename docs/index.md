@@ -17,7 +17,7 @@ A Rust library with Python bindings for simulating the detection of astrophysica
 
 | Type | Population | Lightcurve Model |
 |------|-----------|-----------------|
-| Kilonovae | `KilonovaPopulation`, `Bu2026KilonovaPopulation` | `MetzgerKNModel`, fiestaEM surrogate |
+| Kilonovae | `KilonovaPopulation`, `FixedMetzgerKilonovaPopulation`, `Bu2026KilonovaPopulation`, `FixedBu2026KilonovaPopulation` | `MetzgerKNModel` (blackbody), fiestaEM surrogate |
 | Type Ia SNe | `SupernovaIaPopulation` | Bazin parametric |
 | Type II SNe | `SupernovaIIPopulation` | Villar parametric |
 | TDEs | `TdePopulation` | TDE parametric |
