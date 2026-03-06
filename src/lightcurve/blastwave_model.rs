@@ -57,7 +57,7 @@ fn forward_jet_res(theta_c: f64, npoints: usize) -> Vec<f64> {
 }
 
 /// Configure a top-hat jet from GRB physical parameters.
-fn build_jet_config(
+pub fn build_jet_config(
     eiso: f64,
     gamma_0: f64,
     theta_c: f64,

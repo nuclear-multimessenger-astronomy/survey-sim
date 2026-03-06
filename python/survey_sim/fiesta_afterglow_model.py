@@ -229,7 +229,8 @@ class FiestaAfterglowModel:
         X_all["redshift"] = jnp.array(redshifts, dtype=jnp.float32)
 
         # GPU vmap call in chunks to avoid OOM.
-        CHUNK = 4096
+        # Scale chunk size by number of filters (6 LSST bands needs smaller chunks).
+        CHUNK = max(512, 4096 // max(len(self.reverse_map), 1))
         time_chunks = []
         mag_chunks = {filt: [] for filt in self.reverse_map}
         for c0 in range(0, N, CHUNK):

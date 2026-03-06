@@ -419,6 +419,159 @@ impl PyBlastwaveModel {
     }
 }
 
+#[pymethods]
+impl PyBlastwaveModel {
+    /// Evaluate the blastwave model for a single GRB at given observation times.
+    ///
+    /// Parameters
+    /// ----------
+    /// params : dict
+    ///     GRB physical parameters. Required keys:
+    ///     ``Eiso``, ``Gamma_0``, ``theta_v``, ``logthc``, ``logn0``,
+    ///     ``logepse``, ``logepsB``, ``p``, ``av``,
+    ///     ``p_rvs``, ``logepse_rvs``, ``logepsB_rvs``.
+    /// z : float
+    ///     Source redshift.
+    /// d_l_mpc : float
+    ///     Luminosity distance in Mpc.
+    /// times_s : list[float]
+    ///     Observer-frame times in seconds since explosion.
+    /// band : str
+    ///     Band name (must be in ``band_frequencies``).
+    ///
+    /// Returns
+    /// -------
+    /// list[float]
+    ///     Flux density in mJy at each time.
+    #[pyo3(signature = (params, z, d_l_mpc, times_s, band))]
+    fn evaluate_flux(
+        &self,
+        params: HashMap<String, f64>,
+        z: f64,
+        d_l_mpc: f64,
+        times_s: Vec<f64>,
+        band: String,
+    ) -> PyResult<Vec<f64>> {
+        use blastwave::afterglow::eats::EATS;
+        use blastwave::afterglow::forward_grid::ForwardGrid;
+        use blastwave::afterglow::models::{Dict, get_radiation_model};
+        use blastwave::constants::{C_SPEED, MASS_P, MPC};
+        use blastwave::hydro::sim_box::SimBox;
+
+        let freq = *self.band_frequencies.get(&band).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyKeyError, _>(
+                format!("Band '{}' not in band_frequencies", band),
+            )
+        })?;
+
+        let get = |key: &str| -> PyResult<f64> {
+            params.get(key).copied().ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyKeyError, _>(
+                    format!("Missing parameter: {}", key),
+                )
+            })
+        };
+
+        let eiso = get("Eiso")?;
+        let gamma_0 = get("Gamma_0")?;
+        let theta_v = get("theta_v")?;
+        let logthc = get("logthc")?;
+        let logn0 = get("logn0")?;
+        let logepse = get("logepse")?;
+        let logepsb = get("logepsB")?;
+        let p = get("p")?;
+        let p_rs = get("p_rvs")?;
+        let logepse_rs = get("logepse_rvs")?;
+        let logepsb_rs = get("logepsB_rvs")?;
+
+        let theta_c = 10.0_f64.powf(logthc);
+        let n0 = 10.0_f64.powf(logn0);
+        let eps_e = 10.0_f64.powf(logepse);
+        let eps_b = 10.0_f64.powf(logepsb);
+        let eps_e_rs = 10.0_f64.powf(logepse_rs);
+        let eps_b_rs = 10.0_f64.powf(logepsb_rs);
+
+        let d_cm = d_l_mpc * MPC;
+
+        // Filter valid times (positive only).
+        let valid_times: Vec<(usize, f64)> = times_s
+            .iter()
+            .enumerate()
+            .filter(|(_, &t)| t > 0.0)
+            .map(|(i, &t)| (i, t))
+            .collect();
+
+        if valid_times.is_empty() {
+            return Ok(vec![0.0; times_s.len()]);
+        }
+
+        let tmax = valid_times.iter().map(|(_, t)| *t).fold(0.0_f64, f64::max) * 2.0;
+        let tmax = tmax.max(1e5).min(1e8);
+
+        // Build jet config and solve.
+        let config = survey_sim::lightcurve::blastwave_model::build_jet_config(
+            eiso, gamma_0, theta_c, n0, p, eps_e, eps_b, p_rs, eps_e_rs, eps_b_rs, tmax,
+        );
+        let mut sim_box = SimBox::new(&config);
+        sim_box.solve_pde();
+
+        let theta_data = sim_box.get_theta();
+        let t_data = &sim_box.ts;
+        let y_data = &sim_box.ys;
+        let rs_data = sim_box.ys_rs.as_ref();
+        let eats = EATS::new(theta_data, t_data);
+        let tool = sim_box.tool();
+
+        let radiation_model = get_radiation_model(&self.radiation_model).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!("Unknown radiation model: {}", self.radiation_model),
+            )
+        })?;
+
+        let mut ag_params = Dict::new();
+        ag_params.insert("eps_e".into(), eps_e);
+        ag_params.insert("eps_b".into(), eps_b);
+        ag_params.insert("p".into(), p);
+
+        let mut rs_ag_params = Dict::new();
+        rs_ag_params.insert("eps_e".into(), eps_e_rs);
+        rs_ag_params.insert("eps_b".into(), eps_b_rs);
+        rs_ag_params.insert("p".into(), p_rs);
+
+        let nu_z = freq * (1.0 + z);
+        let flux_factor = (1.0 + z) / (4.0 * std::f64::consts::PI * d_cm * d_cm);
+
+        // Rest-frame times for batch evaluation.
+        let t_rest: Vec<f64> = valid_times.iter().map(|(_, t)| t / (1.0 + z)).collect();
+
+        let fs_grid = ForwardGrid::precompute(
+            nu_z, theta_v, y_data, t_data, theta_data,
+            &eats, tool, &ag_params, radiation_model,
+        );
+        let fs_lum = fs_grid.luminosity_batch(&t_rest);
+
+        let rs_lum = if let Some(rs) = rs_data {
+            let rs_grid = ForwardGrid::precompute_reverse(
+                nu_z, theta_v, y_data, rs, t_data, theta_data,
+                &eats, tool, &rs_ag_params, radiation_model,
+            );
+            rs_grid.luminosity_batch(&t_rest)
+        } else {
+            vec![0.0; t_rest.len()]
+        };
+
+        // Build output array.
+        let mut flux_mjy = vec![0.0_f64; times_s.len()];
+        for (q_idx, &(orig_idx, _)) in valid_times.iter().enumerate() {
+            let lum = fs_lum[q_idx] + rs_lum[q_idx];
+            let f_nu = lum * flux_factor;
+            flux_mjy[orig_idx] = f_nu / 1e-26;
+        }
+
+        Ok(flux_mjy)
+    }
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMetzgerKNModel>()?;
     m.add_class::<PyBlastwaveModel>()?;

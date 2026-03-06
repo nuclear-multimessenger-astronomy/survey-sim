@@ -88,6 +88,10 @@ impl PySimulationPipeline {
                 rust_populations.push(Box::new(tde.to_generator(mjd_min, mjd_max)));
             } else if let Ok(grb) = pop_obj.extract::<PyRef<PyGrbPopulation>>(py) {
                 rust_populations.push(Box::new(grb.to_generator(mjd_min, mjd_max)?));
+            } else if let Ok(grb_on) = pop_obj.extract::<PyRef<PyOnAxisGrbPopulation>>(py) {
+                rust_populations.push(Box::new(grb_on.to_generator(mjd_min, mjd_max)?));
+            } else if let Ok(grb_off) = pop_obj.extract::<PyRef<PyOffAxisGrbPopulation>>(py) {
+                rust_populations.push(Box::new(grb_off.to_generator(mjd_min, mjd_max)?));
             } else {
                 return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
                     "Unsupported population type",
