@@ -19,12 +19,16 @@ pub struct PySimulationPipeline {
     detection: Py<PyDetectionCriteria>,
     n_transients: usize,
     seed: u64,
+    /// If set, apply flux-averaging stacking between lightcurve eval and detection.
+    /// Multiple windows produce independent stacked measurements that are all
+    /// combined for detection (e.g., [900, 3600] for 15-min + 1-hour stacks).
+    stack_windows_s: Option<Vec<f64>>,
 }
 
 #[pymethods]
 impl PySimulationPipeline {
     #[new]
-    #[pyo3(signature = (survey, populations, models, detection, n_transients=100000, seed=42))]
+    #[pyo3(signature = (survey, populations, models, detection, n_transients=100000, seed=42, stack_windows_s=None))]
     fn new(
         survey: Py<PySurveyStore>,
         populations: Vec<PyObject>,
@@ -32,6 +36,7 @@ impl PySimulationPipeline {
         detection: Py<PyDetectionCriteria>,
         n_transients: usize,
         seed: u64,
+        stack_windows_s: Option<Vec<f64>>,
     ) -> Self {
         Self {
             survey,
@@ -40,6 +45,7 @@ impl PySimulationPipeline {
             detection,
             n_transients,
             seed,
+            stack_windows_s,
         }
     }
 
@@ -122,6 +128,7 @@ impl PySimulationPipeline {
         let survey = &survey_ref.inner;
 
         // Run simulation manually (simplified version that borrows survey).
+        let stack_windows_s = self.stack_windows_s.clone();
         let result = py.allow_threads(|| {
             run_pipeline_borrowed(
                 survey,
@@ -130,6 +137,7 @@ impl PySimulationPipeline {
                 &criteria,
                 self.n_transients,
                 self.seed,
+                stack_windows_s,
             )
         });
 
@@ -159,6 +167,7 @@ fn run_pipeline_borrowed(
     criteria: &DetectionCriteria,
     n_transients: usize,
     seed: u64,
+    stack_windows_s: Option<Vec<f64>>,
 ) -> PipelineResult {
     use rayon::prelude::*;
     use rand::SeedableRng;
@@ -256,40 +265,96 @@ fn run_pipeline_borrowed(
 
         eprintln!("[pipeline] Phase 2 lightcurve eval: {:.1}s, {} evaluations",
             t_phase2.elapsed().as_secs_f64(), evaluations.len());
+
+        // Phase 2.5: Flux-averaging stacking (if configured).
+        // Converts mags to flux, averages within time bins per band,
+        // converts back to mag, and boosts depth by 2.5*log10(sqrt(N)).
+        // Multiple windows produce independent measurements that are combined.
+        let stacked: Option<Vec<(usize, Vec<survey_sim::survey::SurveyObservation>, survey_sim::lightcurve::LightcurveEvaluation)>>;
+
+        if let Some(ref windows) = stack_windows_s {
+            let t_stack = Instant::now();
+            let windows_days: Vec<f64> = windows.iter().map(|w| w / 86400.0).collect();
+
+            stacked = Some(evaluations
+                .par_iter()
+                .map(|(idx, obs_indices, eval)| {
+                    let raw_obs: Vec<&survey_sim::survey::SurveyObservation> =
+                        obs_indices.iter().map(|&oi| survey.get(oi)).collect();
+                    let (combined_obs, combined_eval) =
+                        stack_multi_window(eval, &raw_obs, &windows_days);
+                    (*idx, combined_obs, combined_eval)
+                })
+                .collect());
+
+            let window_labels: Vec<String> = windows.iter().map(|w| format!("{:.0}s", w)).collect();
+            eprintln!("[pipeline] Phase 2.5 stacking: {:.1}s (windows=[{}])",
+                t_stack.elapsed().as_secs_f64(), window_labels.join(", "));
+        } else {
+            stacked = None;
+        }
+
         let t_phase3 = Instant::now();
 
         // Phase 3: Detection (parallel).
         let gal_lat_cut = criteria.min_galactic_lat;
         let spec_k = criteria.spectroscopic_completeness_k;
         let spec_m0 = criteria.spectroscopic_completeness_m0;
-        let detection_results: Vec<(usize, survey_sim::detection::DetectionResult)> = evaluations
-            .par_iter()
-            .map(|(idx, obs_indices, eval)| {
-                let obs_refs: Vec<&survey_sim::survey::SurveyObservation> =
-                    obs_indices.iter().map(|&oi| survey.get(oi)).collect();
-                let mut result = survey_sim::detection::evaluate_detection(eval, &obs_refs, criteria);
-                // Apply galactic latitude cut on the transient sky position.
-                if gal_lat_cut > 0.0 && result.detected {
-                    let b = instances[*idx].coord.galactic_lat().abs();
-                    if b < gal_lat_cut {
-                        result.detected = false;
-                    }
-                }
-                // Apply spectroscopic completeness (magnitude-dependent classification probability).
-                if spec_k > 0.0 && result.detected {
-                    if let Some(peak) = result.peak_mag {
-                        let p = 1.0 / (1.0 + (spec_k * (peak - spec_m0)).exp());
-                        // Deterministic pseudo-random from transient index + seed.
-                        // Use a simple hash: fract(idx * phi) where phi = golden ratio.
-                        let hash = ((*idx as f64 + 0.5) * std::f64::consts::FRAC_1_PI * 7.31).fract();
-                        if hash > p {
-                            result.detected = false;
+
+        let detection_results: Vec<(usize, survey_sim::detection::DetectionResult)> =
+            if let Some(ref stacked_data) = stacked {
+                // Use stacked observations and evaluations.
+                stacked_data
+                    .par_iter()
+                    .map(|(idx, stacked_obs, stacked_eval)| {
+                        let obs_refs: Vec<&survey_sim::survey::SurveyObservation> =
+                            stacked_obs.iter().collect();
+                        let mut result = survey_sim::detection::evaluate_detection(stacked_eval, &obs_refs, criteria);
+                        if gal_lat_cut > 0.0 && result.detected {
+                            let b = instances[*idx].coord.galactic_lat().abs();
+                            if b < gal_lat_cut {
+                                result.detected = false;
+                            }
                         }
-                    }
-                }
-                (*idx, result)
-            })
-            .collect();
+                        if spec_k > 0.0 && result.detected {
+                            if let Some(peak) = result.peak_mag {
+                                let p = 1.0 / (1.0 + (spec_k * (peak - spec_m0)).exp());
+                                let hash = ((*idx as f64 + 0.5) * std::f64::consts::FRAC_1_PI * 7.31).fract();
+                                if hash > p {
+                                    result.detected = false;
+                                }
+                            }
+                        }
+                        (*idx, result)
+                    })
+                    .collect()
+            } else {
+                // No stacking: use raw observations from survey.
+                evaluations
+                    .par_iter()
+                    .map(|(idx, obs_indices, eval)| {
+                        let obs_refs: Vec<&survey_sim::survey::SurveyObservation> =
+                            obs_indices.iter().map(|&oi| survey.get(oi)).collect();
+                        let mut result = survey_sim::detection::evaluate_detection(eval, &obs_refs, criteria);
+                        if gal_lat_cut > 0.0 && result.detected {
+                            let b = instances[*idx].coord.galactic_lat().abs();
+                            if b < gal_lat_cut {
+                                result.detected = false;
+                            }
+                        }
+                        if spec_k > 0.0 && result.detected {
+                            if let Some(peak) = result.peak_mag {
+                                let p = 1.0 / (1.0 + (spec_k * (peak - spec_m0)).exp());
+                                let hash = ((*idx as f64 + 0.5) * std::f64::consts::FRAC_1_PI * 7.31).fract();
+                                if hash > p {
+                                    result.detected = false;
+                                }
+                            }
+                        }
+                        (*idx, result)
+                    })
+                    .collect()
+            };
 
         eprintln!("[pipeline] Phase 3 detection: {:.1}s", t_phase3.elapsed().as_secs_f64());
 
@@ -318,6 +383,260 @@ fn run_pipeline_borrowed(
         n_detected: total_detected,
         rate_summaries,
     }
+}
+
+/// Apply stacking at multiple time windows and combine all stacked observations.
+///
+/// Each window produces independent measurements. For example, with [15min, 1hr]:
+/// - 15-min stacks give a set of observations with moderate depth boost
+/// - 1-hr stacks give fewer observations with larger depth boost
+/// Both sets are combined as independent measurements for detection.
+fn stack_multi_window(
+    eval: &survey_sim::lightcurve::LightcurveEvaluation,
+    raw_obs: &[&survey_sim::survey::SurveyObservation],
+    windows_days: &[f64],
+) -> (Vec<survey_sim::survey::SurveyObservation>, survey_sim::lightcurve::LightcurveEvaluation) {
+    use survey_sim::survey::SurveyObservation;
+    use survey_sim::lightcurve::LightcurveEvaluation;
+
+    if windows_days.is_empty() {
+        return (
+            raw_obs.iter().map(|o| (*o).clone()).collect(),
+            eval.clone(),
+        );
+    }
+
+    if windows_days.len() == 1 {
+        return stack_flux_average(eval, raw_obs, windows_days[0]);
+    }
+
+    // Stack at each window independently, then combine all results.
+    let mut all_obs: Vec<SurveyObservation> = Vec::new();
+    let mut all_mags: HashMap<String, Vec<f64>> = HashMap::new();
+    let mut all_times: Vec<f64> = Vec::new();
+
+    for &window in windows_days {
+        let (stacked_obs, stacked_eval) = stack_flux_average(eval, raw_obs, window);
+
+        let offset = all_obs.len();
+
+        for obs in &stacked_obs {
+            let mut obs_copy = obs.clone();
+            obs_copy.obs_id = (offset + all_obs.len() - offset) as u64 + all_obs.len() as u64;
+            all_obs.push(obs.clone());
+        }
+
+        all_times.extend_from_slice(&stacked_eval.times_mjd);
+
+        for (band, mags) in &stacked_eval.apparent_mags {
+            all_mags.entry(band.clone()).or_default().extend_from_slice(mags);
+        }
+    }
+
+    // Sort everything by MJD.
+    let mut sort_idx: Vec<usize> = (0..all_obs.len()).collect();
+    sort_idx.sort_by(|&a, &b| all_obs[a].mjd.partial_cmp(&all_obs[b].mjd).unwrap());
+
+    let sorted_obs: Vec<SurveyObservation> = sort_idx.iter().map(|&i| {
+        let mut o = all_obs[i].clone();
+        o.obs_id = sort_idx.iter().position(|&j| j == i).unwrap_or(0) as u64;
+        o
+    }).collect();
+    let sorted_times: Vec<f64> = sort_idx.iter().map(|&i| all_times[i]).collect();
+
+    let mut sorted_mags: HashMap<String, Vec<f64>> = HashMap::new();
+    for (band, mags) in &all_mags {
+        sorted_mags.insert(
+            band.clone(),
+            sort_idx.iter().map(|&i| mags[i]).collect(),
+        );
+    }
+
+    (
+        sorted_obs,
+        LightcurveEvaluation {
+            apparent_mags: sorted_mags,
+            times_mjd: sorted_times,
+        },
+    )
+}
+
+/// Stack observations by flux-averaging within time bins per band.
+///
+/// Replicates the stacking logic from the Argus pipeline:
+/// 1. Group observations by band, then sequentially bin within each band
+///    (a new bin starts when an observation exceeds `window_days` from the bin start)
+/// 2. Average flux density within each bin (convert mag→flux, average, flux→mag)
+/// 3. Boost depth: new_depth = median(depth) + 2.5 * log10(sqrt(n_obs))
+fn stack_flux_average(
+    eval: &survey_sim::lightcurve::LightcurveEvaluation,
+    raw_obs: &[&survey_sim::survey::SurveyObservation],
+    window_days: f64,
+) -> (Vec<survey_sim::survey::SurveyObservation>, survey_sim::lightcurve::LightcurveEvaluation) {
+    use survey_sim::survey::SurveyObservation;
+    use survey_sim::lightcurve::LightcurveEvaluation;
+    use survey_sim::types::{Band, SkyCoord};
+
+    let n = raw_obs.len();
+    if n < 2 {
+        // Nothing to stack.
+        return (
+            raw_obs.iter().map(|o| (*o).clone()).collect(),
+            eval.clone(),
+        );
+    }
+
+    // Group observation indices by band.
+    let mut band_groups: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, obs) in raw_obs.iter().enumerate() {
+        band_groups.entry(obs.band.0.clone()).or_default().push(i);
+    }
+
+    let mut stacked_obs: Vec<SurveyObservation> = Vec::new();
+    let mut stacked_mags: HashMap<String, Vec<f64>> = HashMap::new();
+    let mut stacked_times: Vec<f64> = Vec::new();
+
+    for (band_name, indices) in &band_groups {
+        // Sort by MJD within this band.
+        let mut sorted_idx = indices.clone();
+        sorted_idx.sort_by(|&a, &b| raw_obs[a].mjd.partial_cmp(&raw_obs[b].mjd).unwrap());
+
+        // Sequential binning (matching colleague's approach).
+        let mut bins: Vec<Vec<usize>> = Vec::new();
+        let mut current_bin: Vec<usize> = vec![sorted_idx[0]];
+        let mut bin_start = raw_obs[sorted_idx[0]].mjd;
+
+        for &idx in &sorted_idx[1..] {
+            if raw_obs[idx].mjd - bin_start < window_days {
+                current_bin.push(idx);
+            } else {
+                bins.push(std::mem::take(&mut current_bin));
+                current_bin.push(idx);
+                bin_start = raw_obs[idx].mjd;
+            }
+        }
+        bins.push(current_bin);
+
+        // Get the magnitude array for this band.
+        let band_mags = match eval.apparent_mags.get(band_name) {
+            Some(m) => m,
+            None => continue,
+        };
+
+        let band_stacked_mags = stacked_mags.entry(band_name.clone()).or_default();
+
+        for bin in &bins {
+            let n_bin = bin.len();
+            if n_bin == 0 {
+                continue;
+            }
+
+            // Convert magnitudes to flux density and average.
+            let mut flux_sum = 0.0f64;
+            let mut mjd_sum = 0.0f64;
+            let mut depths: Vec<f64> = Vec::with_capacity(n_bin);
+            let mut valid_count = 0usize;
+
+            for &idx in bin {
+                if idx < band_mags.len() {
+                    let mag = band_mags[idx];
+                    if mag < 90.0 {
+                        // flux = 10^(-0.4 * mag) — constant factor cancels in average→mag conversion.
+                        flux_sum += 10.0_f64.powf(-0.4 * mag);
+                        valid_count += 1;
+                    }
+                }
+                mjd_sum += raw_obs[idx].mjd;
+                depths.push(raw_obs[idx].five_sigma_depth);
+            }
+
+            let mean_mjd = mjd_sum / n_bin as f64;
+
+            // Average magnitude from averaged flux.
+            let avg_mag = if valid_count > 0 {
+                let avg_flux = flux_sum / valid_count as f64;
+                -2.5 * avg_flux.log10()
+            } else {
+                99.0
+            };
+
+            // Depth boost: median depth + 2.5 * log10(sqrt(n)) = median + 1.25 * log10(n).
+            depths.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let median_depth = depths[depths.len() / 2];
+            let stacked_depth = median_depth + 1.25 * (n_bin as f64).log10();
+
+            // Use first observation in bin as template for other fields.
+            let template = raw_obs[bin[0]];
+
+            stacked_obs.push(SurveyObservation {
+                obs_id: stacked_obs.len() as u64,
+                coord: SkyCoord::new(template.coord.ra, template.coord.dec),
+                mjd: mean_mjd,
+                band: Band::new(band_name),
+                five_sigma_depth: stacked_depth,
+                seeing_fwhm: template.seeing_fwhm,
+                exposure_time: template.exposure_time * n_bin as f64,
+                airmass: template.airmass,
+                sky_brightness: template.sky_brightness,
+                night: mean_mjd.floor() as i64,
+            });
+
+            stacked_times.push(mean_mjd);
+            band_stacked_mags.push(avg_mag);
+        }
+    }
+
+    // Sort stacked observations by MJD and align magnitude arrays.
+    // First, create an index mapping.
+    let mut sort_indices: Vec<usize> = (0..stacked_obs.len()).collect();
+    sort_indices.sort_by(|&a, &b| stacked_obs[a].mjd.partial_cmp(&stacked_obs[b].mjd).unwrap());
+
+    let sorted_obs: Vec<SurveyObservation> = sort_indices.iter().map(|&i| stacked_obs[i].clone()).collect();
+
+    // Rebuild magnitude arrays: each band gets a vec of length = total stacked obs,
+    // with 99.0 for obs in other bands.
+    let total = sorted_obs.len();
+    let mut final_mags: HashMap<String, Vec<f64>> = HashMap::new();
+
+    // Build a mapping: for each stacked observation, what band is it and what's its
+    // position in the per-band stacked_mags.
+    // We need to track which per-band index each stacked obs came from.
+    // Since we built stacked_obs by iterating bands then bins, we know the structure.
+    // Let's rebuild more carefully.
+
+    // Track (band, per-band-index) for each stacked obs.
+    let mut obs_band_idx: Vec<(String, usize)> = Vec::new();
+    for (band_name, indices) in &band_groups {
+        let count = stacked_mags.get(band_name).map_or(0, |v| v.len());
+        for i in 0..count {
+            obs_band_idx.push((band_name.clone(), i));
+        }
+    }
+
+    // Initialize all bands with 99.0.
+    for band_name in stacked_mags.keys() {
+        final_mags.insert(band_name.clone(), vec![99.0; total]);
+    }
+
+    // Fill in actual values.
+    for (new_pos, &orig_pos) in sort_indices.iter().enumerate() {
+        let (ref band, band_idx) = obs_band_idx[orig_pos];
+        if let Some(mags) = stacked_mags.get(band) {
+            if let Some(final_band) = final_mags.get_mut(band) {
+                final_band[new_pos] = mags[band_idx];
+            }
+        }
+    }
+
+    let final_times: Vec<f64> = sorted_obs.iter().map(|o| o.mjd).collect();
+
+    (
+        sorted_obs,
+        LightcurveEvaluation {
+            apparent_mags: final_mags,
+            times_mjd: final_times,
+        },
+    )
 }
 
 struct PipelineResult {

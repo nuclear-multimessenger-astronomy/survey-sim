@@ -1,11 +1,18 @@
 #!/usr/bin/env python
-"""Argus Array GRB afterglow detection with blastwave model across stacking strategies.
+"""Argus Array GRB afterglow detection with fiesta surrogate and flux-averaging stacking.
 
-Loops over stacking windows (1s, 15min, 1hr, 1day, 5day) and computes
-detection efficiency for GRB afterglows including reverse shocks.
+Strategy: load survey at 15-min stacking (finest window), evaluate lightcurves
+at those times, then create coarser stacks (1-hr, 1-day) by flux-averaging
+the 15-min evaluations. Multiple stacking scales are treated as independent
+measurements combined for detection.
+
+Uses a single HEALPix pixel (nside=64, pixel 6131) as a representative
+pointing, scaled to full Argus FoV for rate estimates.
 """
 import sys
 sys.path.insert(0, "/fred/oz480/mcoughli/simulations/survey-sim/python")
+
+import survey_sim.gpu_setup  # noqa: F401 — configure CUDA for JAX
 
 import math
 import time
@@ -13,35 +20,26 @@ import time
 from survey_sim import (
     SurveyStore,
     GrbPopulation,
-    BlastwaveModel,
     DetectionCriteria,
     SimulationPipeline,
 )
+from survey_sim.fiesta_afterglow_model import FiestaAfterglowModel
 
-# Argus parquet files
+# Argus band map: single g-band (ztfg as closest match in sncosmo)
+ARGUS_BAND_MAP = {"g": "ztfg"}
+
+# Argus parquet files (single HEALPix pixel)
 parquet_files = ["/fred/oz480/mcoughli/simulations/argus/argussim_hpx_6131.parquet"]
 
 # GRB catalog
 grb_csv = "/fred/oz480/mcoughli/simulations/argus/GRB_afterglows_argus.csv"
 
-# Stacking strategies: (label, window_seconds, description)
-STACKING_STRATEGIES = [
-    ("1s",    None,      "No stacking (raw 1-second exposures)"),
-    ("15min", 900.0,     "15-minute stacks"),
-    ("1hr",   3600.0,    "1-hour stacks"),
-    ("1day",  86400.0,   "1-day stacks"),
-    ("5day",  432000.0,  "5-day stacks"),
-]
-
-# Argus band frequency: broad g-band centered at 445 nm
-# ν = c / λ = 3e10 / 4.45e-5 = 6.74e14 Hz
-ARGUS_BAND_FREQ = {"g": 6.74e14}
-
-# GRB population
-N_TRANSIENTS = 10000  # per stacking strategy
+# On-axis GRB rate
+GRB_RATE = 1.3  # Gpc^-3 yr^-1
+N_TRANSIENTS = 10_000
 SEED = 42
 
-# Detection criteria for Argus
+# Detection criteria for Argus (relaxed — wide field, high cadence)
 det = DetectionCriteria(
     snr_threshold=5.0,
     snr_threshold_secondary=3.0,
@@ -54,45 +52,57 @@ det = DetectionCriteria(
     min_fade_rate=0.0,
 )
 
-# Blastwave model with reverse shocks (default)
-model = BlastwaveModel(
-    radiation_model="sync_ssa_smooth",
-    band_frequencies=ARGUS_BAND_FREQ,
+# Load fiesta afterglow model (FS + RS)
+print("Loading fiesta blastwave_rs_gaussian_CVAE surrogate (FS+RS)...")
+t0 = time.time()
+model = FiestaAfterglowModel(
+    name="blastwave_rs_gaussian_CVAE",
+    band_map=ARGUS_BAND_MAP,
 )
+print(f"  Loaded in {time.time()-t0:.1f}s")
+print(f"  Has reverse shock: {model.has_rs}")
+print()
+
+# Load survey at 15-min stacking (finest resolution needed).
+# The afterglow model doesn't vary on sub-15min timescales, so this
+# is equivalent to evaluating at each raw exposure.
+print("Loading Argus survey (15-min stacked)...")
+t0 = time.time()
+survey = SurveyStore.from_argus(
+    parquet_files, band="g", nside=64, stack_window_s=900.0  # 15 min
+)
+print(f"  Loaded in {time.time()-t0:.1f}s")
+print(f"  15-min stacked observations: {survey.n_observations:,}")
+print(f"  Duration: {survey.duration_years:.2f} yr")
+print()
+
+# Stacking strategies:
+# - None: use 15-min stacks directly (no further stacking)
+# - [3600]: flux-average into 1-hr stacks, combine with 15-min as independent measurements
+# - [86400]: flux-average into 1-day stacks, combine with 15-min
+# - [3600, 86400]: 15-min + 1-hr + 1-day all as independent measurements
+# Note: stack_windows_s=None means no pipeline stacking (just use the survey-level 15-min stacks)
+STRATEGIES = [
+    ("15min only",    None,                  "15-min stacks, no further stacking"),
+    ("15m+1hr",       [3600.0],              "15-min + 1-hour as independent measurements"),
+    ("15m+1hr+1day",  [3600.0, 86400.0],     "15-min + 1-hour + 1-day combined"),
+]
 
 print("=" * 70)
-print("Argus Array GRB Afterglow Detection — Stacking Comparison")
+print("Argus Array GRB Afterglow — Stacking Comparison (FS+RS)")
 print("=" * 70)
-print(f"GRB catalog: {grb_csv}")
-print(f"N_transients: {N_TRANSIENTS}")
-print(f"Blastwave model: sync_ssa_smooth (with reverse shocks)")
+print(f"Rate: {GRB_RATE} Gpc^-3 yr^-1 (on-axis)")
+print(f"N_transients: {N_TRANSIENTS:,}")
 print()
 
 results = []
 
-for label, window_s, description in STACKING_STRATEGIES:
+for label, windows, description in STRATEGIES:
     print(f"--- {label}: {description} ---")
     t0 = time.time()
 
-    # Load survey with stacking
-    survey = SurveyStore.from_argus(parquet_files, band="g", nside=64, stack_window_s=window_s)
-    n_obs = survey.n_observations
-    duration = survey.duration_years
+    grb_pop = GrbPopulation(grb_csv, rate=GRB_RATE, z_max=6.0)
 
-    # Expected depth boost
-    if window_s is not None:
-        # Typical N exposures per window (1-second cadence, but not all seconds observed)
-        approx_n_per_window = max(1, n_obs)  # rough
-        boost_str = f"~1.25*log10(N) deeper"
-    else:
-        boost_str = "single-frame depth"
-
-    print(f"  Observations: {n_obs}, Duration: {duration:.2f} yr, Depth: {boost_str}")
-
-    # GRB population
-    grb_pop = GrbPopulation(grb_csv, rate=1.0, z_max=6.0)
-
-    # Pipeline
     pipe = SimulationPipeline(
         survey=survey,
         populations=[grb_pop],
@@ -100,6 +110,7 @@ for label, window_s, description in STACKING_STRATEGIES:
         detection=det,
         n_transients=N_TRANSIENTS,
         seed=SEED,
+        stack_windows_s=windows,
     )
 
     result = pipe.run()
@@ -110,22 +121,11 @@ for label, window_s, description in STACKING_STRATEGIES:
     print(f"  Efficiency: {eff:.6f} ({eff*100:.4f}%)")
     print(f"  Time: {elapsed:.1f}s")
 
-    # Rate calculation
-    z_max = 6.0
-    # Comoving volume out to z=6 ~ 1140 Gpc^3
-    # For simplicity, use the efficiency and a nominal volume
-    # The pipeline's rate_summary has more detail
-    for rs in result.rate_summaries:
-        print(f"  z_max used: {rs.transient_type}, eff={rs.overall_efficiency:.6f}")
-
     results.append({
         "label": label,
-        "window_s": window_s,
-        "n_obs": n_obs,
         "n_detected": result.n_detected,
         "n_simulated": result.n_simulated,
         "efficiency": eff,
-        "duration_yr": duration,
         "elapsed_s": elapsed,
     })
     print()
@@ -134,26 +134,34 @@ for label, window_s, description in STACKING_STRATEGIES:
 print("=" * 70)
 print("SUMMARY")
 print("=" * 70)
-print(f"{'Stacking':>8s}  {'N_obs':>8s}  {'N_det':>6s}  {'N_sim':>7s}  {'Eff (%)':>9s}  {'Time':>7s}")
+print(f"{'Strategy':>16s}  {'N_det':>6s}  {'N_sim':>8s}  {'Eff (%)':>10s}  {'Time':>7s}")
 print("-" * 70)
 for r in results:
     eff_pct = r["efficiency"] * 100
-    print(f"{r['label']:>8s}  {r['n_obs']:>8d}  {r['n_detected']:>6d}  {r['n_simulated']:>7d}  {eff_pct:>9.4f}  {r['elapsed_s']:>6.1f}s")
+    print(f"{r['label']:>16s}  {r['n_detected']:>6d}  {r['n_simulated']:>8,d}  {eff_pct:>10.4f}  {r['elapsed_s']:>6.1f}s")
 
-# Rate upper limits (90% CL) for each strategy
+# Expected detections for full Argus.
+# NOTE: The Argus instrument FoV (8000 deg^2) means the spatial cone query
+# from even a single pixel already covers the full Argus sky fraction (~19%).
+# So the MC efficiency epsilon = N_det/N_sim already includes sky coverage.
+# We must NOT multiply by f_sky again.
 print()
-print(f"{'Stacking':>8s}  {'Eff':>10s}  {'VT_eff':>12s}  {'R_upper(90%)':>14s}")
+V_max = 1140.0  # Gpc^3 to z=6 (full sky)
+duration = survey.duration_years
+
+print("Expected detections (full Argus FoV, 8000 deg^2):")
+print(f"{'Strategy':>16s}  {'Eff':>10s}  {'Expected/5yr':>12s}  {'R_90 (Gpc^-3/yr)':>18s}")
 print("-" * 70)
-f_sky = 8000.0 / 41253.0  # Argus FoV / full sky
 for r in results:
     eff = r["efficiency"]
-    dur = r["duration_yr"]
-    # Approximate comoving volume to z=6
-    V_max = 1140.0  # Gpc^3 (approximate)
-    V_eff = V_max * f_sky
-    VT = V_eff * dur * eff
+    # eff already includes sky fraction via spatial matching
+    VT = V_max * duration * eff
+    expected = GRB_RATE * VT
     if VT > 0:
         R90 = -math.log(0.10) / VT
-        print(f"{r['label']:>8s}  {eff:>10.6f}  {VT:>10.4f}  {R90:>12.1f}")
+        print(f"{r['label']:>16s}  {eff:>10.6f}  {expected:>12.1f}  {R90:>18.1f}")
     else:
-        print(f"{r['label']:>8s}  {eff:>10.6f}  {'N/A':>12s}  {'inf':>14s}")
+        print(f"{r['label']:>16s}  {eff:>10.6f}  {'0.0':>12s}  {'inf':>18s}")
+
+print()
+print("For comparison, ZTF (FS+RS): ~5 detections / 3yr")

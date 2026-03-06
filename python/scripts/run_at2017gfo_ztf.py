@@ -17,9 +17,16 @@ from survey_sim import (
 )
 from survey_sim.fiesta_model import FiestaKNModel
 
-# Load ZTF boom data
-boom_files = sorted(glob.glob("/fred/oz480/mcoughli/simulations/ztf_boom/*.h5"))
-print(f"Loading {len(boom_files)} ZTF boom HDF5 files...")
+# Load ZTF boom data: March 2018 through March 2021 (ZTFReST period)
+boom_dir = "/fred/oz480/mcoughli/simulations/ztf_boom"
+boom_files = sorted(
+    glob.glob(f"{boom_dir}/ztf_2018*.h5")
+    + glob.glob(f"{boom_dir}/ztf_2019*.h5")
+    + glob.glob(f"{boom_dir}/ztf_2020*.h5")
+    + [f"{boom_dir}/ztf_202101.h5", f"{boom_dir}/ztf_202102.h5", f"{boom_dir}/ztf_202103.h5"]
+)
+boom_files = [f for f in boom_files if __import__("os").path.isfile(f)]
+print(f"Loading {len(boom_files)} ZTF boom HDF5 files (Mar 2018 – Mar 2021)...")
 survey = SurveyStore.from_ztf_boom(boom_files, nside=64)
 print(f"  Observations: {survey.n_observations}")
 print(f"  MJD range: {survey.mjd_range}")
@@ -50,6 +57,7 @@ det = DetectionCriteria(
     require_fast_transient=True,
     min_rise_rate=0.0,
     min_fade_rate=0.3,
+    min_galactic_lat=15.0,
 )
 
 # Bu2026 model

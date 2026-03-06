@@ -58,6 +58,7 @@ det = DetectionCriteria(
     require_fast_transient=True,
     min_rise_rate=0.0,
     min_fade_rate=0.3,
+    min_galactic_lat=15.0,
 )
 
 # Bu2026 model
