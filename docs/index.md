@@ -18,10 +18,10 @@ A Rust library with Python bindings for simulating the detection of astrophysica
 | Type | Population | Lightcurve Model |
 |------|-----------|-----------------|
 | Kilonovae | `KilonovaPopulation`, `FixedMetzgerKilonovaPopulation`, `Bu2026KilonovaPopulation`, `FixedBu2026KilonovaPopulation` | `MetzgerKNModel` (blackbody), fiestaEM surrogate |
-| Type Ia SNe | `SupernovaIaPopulation` | Bazin parametric |
+| Type Ia SNe | `SupernovaIaPopulation` | SALT3 (fiesta/JAX) |
 | Type II SNe | `SupernovaIIPopulation` | Villar parametric |
 | TDEs | `TdePopulation` | TDE parametric |
-| GRB Afterglows | `GrbPopulation` | `BlastwaveModel` (hydro + synchrotron) |
+| GRB Afterglows | `GrbPopulation`, `OnAxisGrbPopulation`, `OffAxisGrbPopulation` | `BlastwaveModel` (hydro + synchrotron), fiesta surrogate |
 
 ## Quick Example
 
@@ -41,6 +41,17 @@ result = pipe.run()
 print(result)
 # SimulationResult(n_simulated=10000, n_detected=265, efficiency=0.0265)
 ```
+
+## Example Results
+
+| Transient | Survey | Expected detections |
+|-----------|--------|---------------------|
+| [Kilonovae](examples/kilonova.md) | ZTF (3yr) | R_upper ~ 700–2200 Gpc⁻³ yr⁻¹ |
+| [Kilonovae](examples/kilonova.md) | Rubin (10yr) | ~10 (BNS+NSBH) |
+| [GRB Afterglows](examples/grb_afterglow.md) | ZTF (1yr) | ~10 on-axis, ~1 orphan |
+| [GRB Afterglows](examples/grb_afterglow.md) | Rubin (10yr) | ~49 (44 on-axis + 5 orphan) |
+| [Type Ia SNe](examples/snia.md) | ZTF DR2 (2.8yr) | 3,550 (observed: 3,628) |
+| [Type Ia SNe](examples/snia.md) | Rubin (10yr) | ~1.4M (142K/yr) |
 
 ## Getting Started
 

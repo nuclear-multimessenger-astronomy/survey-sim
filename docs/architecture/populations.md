@@ -115,7 +115,7 @@ pop = TdePopulation(rate=100.0, z_max=0.5, peak_abs_mag=-20.0)
 
 GRB afterglows sampled from a pre-computed CSV catalog. Each row contains a full set of blastwave parameters (jet energy, Lorentz factor, microphysics, viewing angle, etc.) drawn from astrophysical distributions.
 
-The population samples catalog rows with replacement and assigns random sky positions, explosion times, and MW extinction.
+The population samples catalog rows with replacement and assigns random sky positions, explosion times, and MW extinction. Redshifts and luminosity distances come directly from the catalog.
 
 | CSV Column | model_params Key | Description |
 |------------|-----------------|-------------|
@@ -123,23 +123,37 @@ The population samples catalog rows with replacement and assigns random sky posi
 | `Gamma_0` | `Gamma_0` | Initial Lorentz factor |
 | `thv` | `theta_v` | Viewing angle (rad) |
 | `logthc` | `logthc` | log10 jet half-opening angle |
-| `logn0` | `logn0` | log10 ISM density (cm\(^{-3}\)) |
+| `logn0` | `logn0` | log10 ISM density (cm⁻³) |
 | `logepse` | `logepse` | log10 electron energy fraction |
 | `logepsB` | `logepsB` | log10 magnetic energy fraction |
 | `p` | `p` | Electron spectral index |
-| `av` | `av` | Host extinction \(A_V\) |
+| `av` | `av` | Host extinction A_V |
 | `p_rvs` | `p_rvs` | Reverse shock electron index |
 | `logepse_rvs` | `logepse_rvs` | log10 RS electron fraction |
 | `logepsB_rvs` | `logepsB_rvs` | log10 RS magnetic fraction |
 | `peak_mag` | --- | Pre-computed peak apparent mag (informational) |
 
 ```python
-pop = GrbPopulation(
-    "GRB_afterglows_argus.csv",
-    rate=1.0,      # Gpc^-3 yr^-1
-    z_max=6.0,
-)
+pop = GrbPopulation("GRB_afterglows_argus.csv", rate=1.0, z_max=6.0)
 ```
+
+### OnAxisGrbPopulation
+
+Filters the GRB catalog to on-axis rows only (θ_v ≤ θ_j). Uses catalog redshifts and luminosity distances directly, since these come from the gamma-ray-detected GRB redshift distribution. Appropriate for predicting blind-discovery rates of prompt-emission-triggered afterglows.
+
+```python
+pop = OnAxisGrbPopulation("GRB_afterglows_argus.csv", rate=1.0, z_max=6.0)
+```
+
+### OffAxisGrbPopulation
+
+Samples jet intrinsic properties (E_iso, Γ₀, microphysics) from catalog rows, but draws redshift from the volumetric distribution (uniform in comoving volume) and viewing angle isotropically (θ_v > θ_j). This produces the physically correct distribution of "orphan afterglows" that are not associated with a detected gamma-ray burst.
+
+```python
+pop = OffAxisGrbPopulation("GRB_afterglows_argus.csv", rate=100.0, z_max=1.0)
+```
+
+The default z_max of 1.0 reflects the fact that off-axis afterglows beyond z ~ 1 are too faint for detection even with Rubin.
 
 ## Custom Populations
 

@@ -7,31 +7,24 @@ apparent magnitudes for use with PythonCallbackModel.
 import numpy as np
 import jax.numpy as jnp
 
-# Band name mapping: survey-sim short names <-> jax_supernovae filter names.
-_BAND_TO_SALT3 = {
-    "g": "ztfg",
-    "r": "ztfr",
-    "i": "ztfi",
-    "u": "lsstu",
-    "lsstg": "lsstg",
-    "lsstr": "lsstr",
-    "lssti": "lssti",
-    "lsstz": "lsstz",
-    "lssty": "lssty",
+# Default band name mappings: survey-sim short names -> jax_supernovae filter names.
+ZTF_SALT3_BANDS = {"g": "ztfg", "r": "ztfr", "i": "ztfi"}
+LSST_SALT3_BANDS = {
+    "u": "lsstu", "g": "lsstg", "r": "lsstr",
+    "i": "lssti", "z": "lsstz", "y": "lssty",
 }
-_SALT3_TO_BAND = {v: k for k, v in _BAND_TO_SALT3.items()}
 
 
-def _ensure_ztfi_registered():
-    """Register ztfi bandpass from sncosmo if not already in jax_supernovae."""
+def _ensure_bandpass_registered(name):
+    """Register a bandpass from sncosmo if not already in jax_supernovae."""
     from jax_supernovae.bandpasses import get_bandpass, register_bandpass, Bandpass
     try:
-        get_bandpass("ztfi")
+        get_bandpass(name)
     except (ValueError, KeyError):
         import sncosmo
-        b = sncosmo.get_bandpass("ztfi")
-        bp = Bandpass(wave=jnp.array(b.wave), trans=jnp.array(b.trans), name="ztfi")
-        register_bandpass("ztfi", bp)
+        b = sncosmo.get_bandpass(name)
+        bp = Bandpass(wave=jnp.array(b.wave), trans=jnp.array(b.trans), name=name)
+        register_bandpass(name, bp)
 
 
 class FiestaSALT3Model:
@@ -45,15 +38,18 @@ class FiestaSALT3Model:
         Rest-frame time grid in days since peak. Default: -20 to +50, 200 points.
     """
 
-    def __init__(self, filters=None, times_grid=None):
+    def __init__(self, filters=None, band_map=None, times_grid=None):
+        if band_map is None:
+            band_map = ZTF_SALT3_BANDS
         if filters is None:
-            filters = ["g", "r", "i"]
+            filters = list(band_map.keys())
+        self.band_map = band_map
         self.survey_filters = filters
-        self.salt3_filters = [_BAND_TO_SALT3[f] for f in filters]
+        self.salt3_filters = [band_map[f] for f in filters]
 
-        # Register ztfi if needed
-        if "ztfi" in self.salt3_filters:
-            _ensure_ztfi_registered()
+        # Register any missing bandpasses from sncosmo
+        for filt in self.salt3_filters:
+            _ensure_bandpass_registered(filt)
 
         if times_grid is None:
             times_grid = jnp.linspace(-20, 50, 200)
