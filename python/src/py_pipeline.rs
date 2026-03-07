@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 use survey_sim::detection::DetectionCriteria;
 
 use crate::py_detection::PyDetectionCriteria;
-use crate::py_lightcurve::{PyBlastwaveModel, PyMetzgerKNModel, PythonCallbackModel};
+use crate::py_lightcurve::{PyBlastwaveModel, PyMetzgerKNModel, PyParametricModel, PythonCallbackModel};
 use crate::py_population::*;
 use crate::py_survey::PySurveyStore;
 
@@ -86,6 +86,8 @@ impl PySimulationPipeline {
                 rust_populations.push(Box::new(snii.to_generator(mjd_min, mjd_max)));
             } else if let Ok(tde) = pop_obj.extract::<PyRef<PyTdePopulation>>(py) {
                 rust_populations.push(Box::new(tde.to_generator(mjd_min, mjd_max)));
+            } else if let Ok(fbot) = pop_obj.extract::<PyRef<PyFbotPopulation>>(py) {
+                rust_populations.push(Box::new(fbot.to_generator(mjd_min, mjd_max)));
             } else if let Ok(grb) = pop_obj.extract::<PyRef<PyGrbPopulation>>(py) {
                 rust_populations.push(Box::new(grb.to_generator(mjd_min, mjd_max)?));
             } else if let Ok(grb_on) = pop_obj.extract::<PyRef<PyOnAxisGrbPopulation>>(py) {
@@ -108,6 +110,8 @@ impl PySimulationPipeline {
                 rust_models.insert(name.clone(), Box::new(kn_model.to_model()));
             } else if let Ok(bw_model) = model_obj.extract::<PyRef<PyBlastwaveModel>>(py) {
                 rust_models.insert(name.clone(), Box::new(bw_model.to_model()));
+            } else if let Ok(param_model) = model_obj.extract::<PyRef<PyParametricModel>>(py) {
+                rust_models.insert(name.clone(), Box::new(param_model.to_model()));
             } else {
                 // Assume it's a Python callback model (e.g., fiestaEM).
                 rust_models.insert(

@@ -33,6 +33,18 @@ From Rigault et al. (2024), Perley (2020), Nicolas (2021), Ginolin (2024):
 | Absolute magnitude M_B | −19.3 | Tripp relation |
 | Standardization | α = −0.14, β = 3.15 | Tripp (1998) |
 
+### SALT3 model
+
+The `FiestaSALT3Model` wraps fiesta's JAX-native SALT3 implementation. It computes `log10(x0)` from the Tripp standardization relation:
+
+$$\log_{10}(x_0) = -\frac{m_B - 10.682}{2.5}$$
+
+For efficiency, the model uses three levels of optimization:
+
+1. **Redshift binning**: Group transients by $\Delta z = 0.01$ bins, sharing the same SALT3 model instance per bin
+2. **JAX vmap**: Vectorized evaluation within each bin using fixed-size padded arrays (avoids JIT recompilation on shape changes)
+3. **Columnar array passing**: Rust passes flat numpy arrays across the PyO3 boundary instead of per-transient Python dicts, and receives flat results back
+
 ---
 
 ## ZTF DR2 validation
@@ -68,7 +80,49 @@ The DR2 selection includes both photometric quality cuts and BTS spectroscopic c
 | Galactic latitude | \|b\| > 15° |
 | **Spectroscopic completeness** | Logistic: k=2.378, m0=19.9 |
 
-The BTS spectroscopic completeness is modeled as a logistic function of peak apparent magnitude, giving ~97% at mag 18.0 and ~44% at mag 20.0. The m0 = 19.9 midpoint is slightly fainter than pure BTS (m0 ≈ 19.5) because 21% of DR2 targets come from non-BTS programs.
+### BTS spectroscopic completeness
+
+The ZTF DR2 sample is dominated by the Bright Transient Survey (BTS; Perley et al. 2020, Fremling et al. 2020), which has magnitude-dependent classification completeness. We model this as a logistic function applied probabilistically to each detected transient:
+
+$$P(\text{classified}) = \frac{1}{1 + e^{k \cdot (m_\text{peak} - m_0)}}$$
+
+with $k = 2.378$ and $m_0 = 19.9$:
+
+| Peak mag | Model completeness |
+|----------|--------------------|
+| 18.0     | 99%                |
+| 18.5     | 97%                |
+| 19.0     | 89%                |
+| 19.5     | 72%                |
+| 20.0     | 44%                |
+
+!!! note "BTS + non-BTS contributions"
+    The $m_0 = 19.9$ midpoint is slightly fainter than a pure BTS fit ($m_0 \approx 19.5$)
+    because 21% of DR2 targets come from programs other than BTS, which contribute
+    additional fainter classifications. The combined model reproduces the DR2 count
+    within ~2%.
+
+```python
+det = DetectionCriteria(
+    snr_threshold=5.0,
+    snr_threshold_secondary=5.0,
+    min_detections=7,
+    min_detections_primary=7,
+    min_bands=2,
+    min_per_band=3,
+    max_timespan_days=100.0,
+    min_time_separation_hours=24.0,
+    require_fast_transient=False,
+    min_rise_rate=0.0,
+    min_fade_rate=0.0,
+    min_pre_peak_detections=1,
+    min_post_peak_detections=3,
+    min_phase_range_days=30.0,
+    min_galactic_lat=15.0,
+    spectroscopic_completeness_k=2.378,
+    spectroscopic_completeness_m0=19.90,
+)
+```
 
 ### Results (100K injections)
 
@@ -157,7 +211,18 @@ The SALT3 model requires JAX with GPU support for practical performance:
 import survey_sim.gpu_setup  # auto-configures CUDA for JAX
 ```
 
-The `warm_up()` call pre-compiles JAX JIT kernels for each redshift bin. This takes ~10 minutes for z_max = 0.5 (50 bins) but eliminates first-call latency. Subsequent pipeline runs complete Phase 2 in ~30s for 60K evaluations.
+The `warm_up()` call pre-compiles JAX JIT kernels for each redshift bin. This takes ~100s for z_max = 0.12 (12 bins) or ~10 minutes for z_max = 0.5 (50 bins), but eliminates first-call latency. Subsequent pipeline runs complete Phase 2 in ~20–30s for 60K evaluations.
+
+!!! tip "Warm-up time"
+    The SALT3 JIT compilation and GPU warm-up is a one-time cost per Python session.
+    Subsequent `pipeline.run()` calls reuse the compiled kernels.
+
+### Requirements
+
+- **GPU**: NVIDIA GPU with CUDA (for JAX-accelerated SALT3)
+- **Python packages**: `jax`, `jaxlib`, `fiesta`, `jax_supernovae`, `sncosmo`
+- **Data**: ZTF boom-pipeline HDF5 files (available from survey-sim-data HuggingFace repo)
+- **Module loads** (HPC): `module load gcc/13.2.0 python/3.11.5 openmpi/4.1.6 hdf5/1.14.3 cuda/12.8.0`
 
 ---
 
@@ -166,4 +231,4 @@ The `warm_up()` call pre-compiles JAX JIT kernels for each redshift bin. This ta
 | Script | Description |
 |--------|-------------|
 | `python/scripts/run_snia_rubin.py` | Rubin SN Ia photometric detection (100K injections) |
-| See `docs/examples/ztf_snia.md` | ZTF DR2 validation (detailed) |
+| `python/scripts/run_snia_ztf.py` | ZTF DR2 validation (100K injections) |

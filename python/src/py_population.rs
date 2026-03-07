@@ -204,12 +204,46 @@ pub struct PyTdePopulation {
     pub(crate) rate: f64,
     pub(crate) z_max: f64,
     pub(crate) peak_abs_mag: f64,
+    pub(crate) use_luminosity_function: bool,
 }
 
 #[pymethods]
 impl PyTdePopulation {
     #[new]
-    #[pyo3(signature = (rate=100.0, z_max=0.5, peak_abs_mag=-20.0))]
+    #[pyo3(signature = (rate=100.0, z_max=0.5, peak_abs_mag=-20.0, use_luminosity_function=false))]
+    fn new(rate: f64, z_max: f64, peak_abs_mag: f64, use_luminosity_function: bool) -> Self {
+        Self {
+            rate,
+            z_max,
+            peak_abs_mag,
+            use_luminosity_function,
+        }
+    }
+}
+
+impl PyTdePopulation {
+    pub fn to_generator(&self, mjd_min: f64, mjd_max: f64) -> TdePopulation {
+        if self.use_luminosity_function {
+            TdePopulation::from_luminosity_function(self.z_max, mjd_min, mjd_max)
+        } else {
+            TdePopulation::new(self.rate, self.z_max, self.peak_abs_mag, mjd_min, mjd_max)
+        }
+    }
+}
+
+/// Python wrapper for FbotPopulation.
+#[pyclass]
+#[pyo3(name = "FbotPopulation")]
+pub struct PyFbotPopulation {
+    pub(crate) rate: f64,
+    pub(crate) z_max: f64,
+    pub(crate) peak_abs_mag: f64,
+}
+
+#[pymethods]
+impl PyFbotPopulation {
+    #[new]
+    #[pyo3(signature = (rate=65.0, z_max=0.3, peak_abs_mag=-18.7))]
     fn new(rate: f64, z_max: f64, peak_abs_mag: f64) -> Self {
         Self {
             rate,
@@ -219,9 +253,9 @@ impl PyTdePopulation {
     }
 }
 
-impl PyTdePopulation {
-    pub fn to_generator(&self, mjd_min: f64, mjd_max: f64) -> TdePopulation {
-        TdePopulation::new(self.rate, self.z_max, self.peak_abs_mag, mjd_min, mjd_max)
+impl PyFbotPopulation {
+    pub fn to_generator(&self, mjd_min: f64, mjd_max: f64) -> FbotPopulation {
+        FbotPopulation::new(self.rate, self.z_max, self.peak_abs_mag, mjd_min, mjd_max)
     }
 }
 
@@ -341,6 +375,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySupernovaIaPopulation>()?;
     m.add_class::<PySupernovaIIPopulation>()?;
     m.add_class::<PyTdePopulation>()?;
+    m.add_class::<PyFbotPopulation>()?;
     m.add_class::<PyGrbPopulation>()?;
     m.add_class::<PyOnAxisGrbPopulation>()?;
     m.add_class::<PyOffAxisGrbPopulation>()?;

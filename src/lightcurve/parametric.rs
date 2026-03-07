@@ -47,6 +47,7 @@ fn default_model_for_type(
         TransientType::SupernovaII => SviModelName::Villar,
         TransientType::SupernovaIbc => SviModelName::Villar,
         TransientType::Tde => SviModelName::Tde,
+        TransientType::Fbot => SviModelName::Bazin,
         TransientType::Afterglow => SviModelName::Afterglow,
         TransientType::Custom => SviModelName::Bazin,
     }
@@ -253,13 +254,17 @@ fn extract_model_params(instance: &TransientInstance, model: SviModelName) -> Ve
             ]
         }
         SviModelName::Tde => {
-            // TDE params: [A, t0, sigma, tau, c]
+            // TDE params: [log_a, b, t0, log_tau_rise, log_tau_fall, alpha, sigma_extra]
+            // Sigmoid rise × power-law decay: a * sig(phase/tau_rise) * (1+softplus(phase)/tau_fall)^(-alpha) + b
+            // Default log_a=ln(2)≈0.69 so peak flux ≈ 1.0 (sigmoid peaks at 0.5, × exp(ln2) = 1)
             vec![
-                get("A", 1.0),
+                get("log_a", 0.69),
+                get("b", 0.0),
                 get("t0", 0.0),
-                get("sigma", 10.0),
-                get("tau", 30.0),
-                get("c", 0.0),
+                get("log_tau_rise", 2.9),   // ln(18) ≈ 18 day rise
+                get("log_tau_fall", 4.1),   // ln(60) ≈ 60 day fall
+                get("alpha", 1.67),         // 5/3 power-law (TDE fallback)
+                0.0,                        // sigma_extra (noise, not used in forward eval)
             ]
         }
         SviModelName::Afterglow => {

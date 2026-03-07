@@ -46,9 +46,10 @@ nav:
     - Python API: api/python.md
     - Rust Crate: api/rust.md
   - Examples:
-    - Kilonova Survey: examples/kilonova.md
-    - ZTF Kilonova Efficiency: examples/ztf_kilonova.md
-    - ZTF SN Ia DR2: examples/ztf_snia.md
+    - Kilonovae: examples/kilonova.md
+    - Type Ia Supernovae: examples/snia.md
+    - Tidal Disruption Events: examples/tde.md
+    - Fast Blue Optical Transients: examples/fbot.md
     - GRB Afterglows: examples/grb_afterglow.md
 
 markdown_extensions:

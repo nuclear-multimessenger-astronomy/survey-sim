@@ -79,6 +79,7 @@ pub enum TransientType {
     SupernovaII,
     SupernovaIbc,
     Tde,
+    Fbot,
     Afterglow,
     Custom,
 }
@@ -91,6 +92,7 @@ impl fmt::Display for TransientType {
             Self::SupernovaII => write!(f, "SNII"),
             Self::SupernovaIbc => write!(f, "SNIbc"),
             Self::Tde => write!(f, "TDE"),
+            Self::Fbot => write!(f, "FBOT"),
             Self::Afterglow => write!(f, "Afterglow"),
             Self::Custom => write!(f, "Custom"),
         }

@@ -31,6 +31,46 @@ impl PyMetzgerKNModel {
     }
 }
 
+/// Generic parametric lightcurve model.
+///
+/// Uses the built-in parametric models from lightcurve-fitting (TDE, Bazin, Villar, etc.).
+/// The model is automatically selected based on the transient type, or can be
+/// overridden via the `model_name` parameter.
+#[pyclass]
+#[pyo3(name = "ParametricModel")]
+pub struct PyParametricModel {
+    pub(crate) model_name: Option<String>,
+}
+
+#[pymethods]
+impl PyParametricModel {
+    #[new]
+    #[pyo3(signature = (model_name=None))]
+    fn new(model_name: Option<String>) -> Self {
+        Self { model_name }
+    }
+}
+
+impl PyParametricModel {
+    pub fn to_model(&self) -> ParametricModel {
+        if let Some(ref name) = self.model_name {
+            use lightcurve_fitting::SviModelName;
+            let svi = match name.to_lowercase().as_str() {
+                "tde" => SviModelName::Tde,
+                "bazin" => SviModelName::Bazin,
+                "villar" => SviModelName::Villar,
+                "arnett" => SviModelName::Arnett,
+                "afterglow" => SviModelName::Afterglow,
+                "metzgerkn" | "metzger" => SviModelName::MetzgerKN,
+                _ => SviModelName::Bazin,
+            };
+            ParametricModel::new().with_model(svi)
+        } else {
+            ParametricModel::new()
+        }
+    }
+}
+
 /// Python callback lightcurve model wrapping a Python object with .predict().
 ///
 /// Designed for fiestaEM SurrogateModel integration.
@@ -575,5 +615,6 @@ impl PyBlastwaveModel {
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMetzgerKNModel>()?;
     m.add_class::<PyBlastwaveModel>()?;
+    m.add_class::<PyParametricModel>()?;
     Ok(())
 }
