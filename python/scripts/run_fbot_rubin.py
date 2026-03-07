@@ -41,7 +41,7 @@ print()
 
 # --- Population ---
 # Same rate and peak mag as ZTF calibration.
-RATE = 65.0     # Gpc^-3 yr^-1 (~0.1% of CC SN rate)
+RATE = 65.0     # Gpc^-3 yr^-1 (~0.1% of CC SN rate, Ho+2021)
 Z_MAX = 0.5
 N_TRANSIENTS = 100_000
 SEED = 42
@@ -49,28 +49,20 @@ SEED = 42
 pop = FbotPopulation(rate=RATE, z_max=Z_MAX, peak_abs_mag=-18.7)
 
 # --- Detection criteria ---
-# Photometric detection of fast transients. Relaxed relative to ZTF
-# since Rubin identifies transients from difference imaging without
-# requiring spectroscopic classification.
+# Fast transient + galactic plane avoidance only.
 det = DetectionCriteria(
     snr_threshold=5.0,
-    snr_threshold_secondary=5.0,
-    min_detections=3,
-    min_detections_primary=3,
-    min_bands=2,                 # multi-band for color
-    min_per_band=2,
-    max_timespan_days=24.0,
-    min_time_separation_hours=24.0,
+    snr_threshold_secondary=3.0,
+    min_detections=2,
+    min_detections_primary=1,
+    min_bands=1,
+    min_per_band=1,
+    max_timespan_days=30.0,
+    min_time_separation_hours=3.0,
     require_fast_transient=True,
     min_rise_rate=0.15,
     min_fade_rate=0.1,
-    min_pre_peak_detections=0,
-    min_post_peak_detections=0,
-    min_phase_range_days=0.0,
     min_galactic_lat=15.0,
-    # Require ~2 mag brighter than limit to distinguish from host
-    spectroscopic_completeness_k=5.0,
-    spectroscopic_completeness_m0=22.5,
 )
 
 # --- Pipeline ---

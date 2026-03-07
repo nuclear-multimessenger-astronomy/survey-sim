@@ -54,36 +54,20 @@ SEED = 42
 pop = FbotPopulation(rate=RATE, z_max=Z_MAX, peak_abs_mag=-18.7)
 
 # --- Detection criteria ---
-# Ho+2021 selection: fast-rising, well-sampled, duration 1-12 days.
-# We use fast transient criteria with rise rate >= 1 mag/6.5d ~ 0.15 mag/d
-# and minimum fade rate to select genuine fast transients.
-# Ho+2021 selection criteria:
-#   1. Duration 1 < t_1/2 < 12 days (fast transient)
-#   2. Fast-rising: >= 1 mag rise in preceding 6.5 days
-#   3. Well-sampled: observations within 5.5 days of peak in g AND r
-#   4. Blue color: g-r < -0.2 at peak
-#   5. Spectroscopic classification
-# We approximate criteria 1-2 with fast transient detection, 3 with
-# multi-band coverage, and 4-5 with a strict brightness cut.
+# Fast transient + galactic plane avoidance only.
 det = DetectionCriteria(
     snr_threshold=5.0,
-    snr_threshold_secondary=5.0,
-    min_detections=5,            # well-sampled lightcurve
-    min_detections_primary=5,
-    min_bands=2,                 # g AND r required
-    min_per_band=2,
-    max_timespan_days=24.0,      # t_1/2 < 12d → visible for ~24d
-    min_time_separation_hours=24.0,
+    snr_threshold_secondary=3.0,
+    min_detections=2,
+    min_detections_primary=1,
+    min_bands=1,
+    min_per_band=1,
+    max_timespan_days=30.0,
+    min_time_separation_hours=3.0,
     require_fast_transient=True,
     min_rise_rate=0.15,          # >= 1 mag in 6.5 days
-    min_fade_rate=0.1,           # must show fading
-    min_pre_peak_detections=1,   # need pre-peak coverage
-    min_post_peak_detections=1,  # need post-peak coverage
-    min_phase_range_days=3.0,    # coverage spanning peak
+    min_fade_rate=0.1,
     min_galactic_lat=7.0,        # ZTF avoids |b| < 7
-    # Bright enough for spectroscopic classification + host subtraction
-    spectroscopic_completeness_k=3.0,
-    spectroscopic_completeness_m0=19.0,
 )
 
 # --- Pipeline ---

@@ -16,8 +16,10 @@ use super::{Result, SurveyError, SurveyLoader, SurveyObservation};
 /// simulated Argus schedule. Rows where `masked == true` are skipped.
 ///
 /// When `stack_window_s` is set, consecutive exposures at the same sky position
-/// within each time window are co-added. The stacked depth improves as
-/// `1.25 * log10(n_exposures)` magnitudes relative to a single exposure.
+/// within each time window are co-added. The stacked depth improvement uses
+/// an interpolation table matching the Argus website science requirements,
+/// which account for read-noise-dominated single frames transitioning to
+/// sky-noise-limited stacks.
 pub struct ArgusLoader {
     parquet_paths: Vec<String>,
     band: String,
@@ -194,14 +196,56 @@ impl SurveyLoader for ArgusLoader {
     }
 }
 
+/// Compute depth boost for stacking N Argus exposures.
+///
+/// Argus 1-second frames are read-noise dominated, so stacking improves
+/// faster than the sky-limited `1.25 * log10(N)`. The depth boost is
+/// interpolated from the Argus website science requirements (g-band, 5σ):
+///
+///   N=1 → 0.0, N=60 → 3.2, N=900 → 4.7, N=3600 → 5.5, N=28800 → 6.4
+///
+/// Uses log-linear interpolation between these anchor points.
+fn argus_depth_boost(n: usize) -> f64 {
+    if n <= 1 {
+        return 0.0;
+    }
+    // (log10(N), depth_boost) from Argus website science requirements.
+    // Base depth: 16.8 mag (1-sec, 5σ, science requirement).
+    // Requirements: 1min=20.0, 15min=21.5, 1hr=22.3, 1night=23.2
+    const TABLE: [(f64, f64); 5] = [
+        (0.0, 0.0),       // N=1
+        (1.778, 3.2),     // N=60 (1 min): 20.0 - 16.8
+        (2.954, 4.7),     // N=900 (15 min): 21.5 - 16.8
+        (3.556, 5.5),     // N=3600 (1 hr): 22.3 - 16.8
+        (4.459, 6.4),     // N=28800 (1 night): 23.2 - 16.8
+    ];
+
+    let log_n = (n as f64).log10();
+
+    // Clamp to table range.
+    if log_n >= TABLE[TABLE.len() - 1].0 {
+        return TABLE[TABLE.len() - 1].1;
+    }
+
+    // Find bracketing interval and interpolate.
+    for i in 1..TABLE.len() {
+        if log_n <= TABLE[i].0 {
+            let frac = (log_n - TABLE[i - 1].0) / (TABLE[i].0 - TABLE[i - 1].0);
+            return TABLE[i - 1].1 + frac * (TABLE[i].1 - TABLE[i - 1].1);
+        }
+    }
+
+    TABLE[TABLE.len() - 1].1
+}
+
 /// Group observations by (healpix, time_bin) and co-add within each bin.
 ///
-/// Depth improvement from stacking N exposures:
-///   Δm = 2.5 * log10(√N) = 1.25 * log10(N)
+/// Depth improvement uses `argus_depth_boost(N)`, an interpolation table
+/// matching the Argus website science requirements.
 ///
 /// The stacked observation gets:
 ///   - MJD: midpoint of the window
-///   - five_sigma_depth: median single-frame depth + 1.25 * log10(N)
+///   - five_sigma_depth: median single-frame depth + argus_depth_boost(N)
 ///   - exposure_time: sum of individual exposure times
 ///   - seeing, airmass, sky_brightness: median of contributing exposures
 fn stack_observations(
@@ -248,8 +292,8 @@ fn stack_observations(
         depths.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let median_depth = depths[depths.len() / 2];
 
-        // Stacking depth boost: 1.25 * log10(N)
-        let depth_boost = 1.25 * (n as f64).log10();
+        // Stacking depth boost from Argus website science requirements.
+        let depth_boost = argus_depth_boost(n);
         let stacked_depth = median_depth + depth_boost;
 
         // Median seeing, airmass, sky_brightness.
