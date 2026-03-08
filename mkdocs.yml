@@ -51,6 +51,7 @@ nav:
     - Tidal Disruption Events: examples/tde.md
     - Fast Blue Optical Transients: examples/fbot.md
     - GRB Afterglows: examples/grb_afterglow.md
+    - GW Event Coverage: examples/gw_coverage.md
 
 markdown_extensions:
   - admonition

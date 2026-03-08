@@ -6,6 +6,7 @@ pub mod instrument;
 pub mod lightcurve;
 pub mod pipeline;
 pub mod population;
+pub mod skymap;
 pub mod spatial;
 pub mod survey;
 pub mod types;
@@ -23,5 +24,6 @@ pub use survey::too::{
     RubinGoldToo, RubinSilverToo, ZtfToo, UltrasatToo, UvexToo,
     builtin_strategy,
 };
+pub use skymap::Skymap;
 pub use survey::{SurveyLoader, SurveyObservation, SurveyStore};
 pub use types::{Band, Cosmology, SkyCoord, TransientInstance, TransientType};
