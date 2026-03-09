@@ -25,6 +25,28 @@ impl PySkymap {
         Ok(Self { inner: skymap })
     }
 
+    /// Construct from arrays (e.g. after rasterizing with ligo.skymap).
+    ///
+    /// Args:
+    ///     nside: HEALPix NSIDE (must be a power of 2)
+    ///     prob: Probability array (nested ordering, length 12*nside²)
+    ///     distmu: Per-pixel distance mean in Mpc (optional)
+    ///     distsigma: Per-pixel distance std in Mpc (optional)
+    ///     distnorm: Per-pixel distance normalization (optional)
+    #[staticmethod]
+    #[pyo3(signature = (nside, prob, distmu=None, distsigma=None, distnorm=None))]
+    fn from_arrays(
+        nside: u32,
+        prob: Vec<f64>,
+        distmu: Option<Vec<f64>>,
+        distsigma: Option<Vec<f64>>,
+        distnorm: Option<Vec<f64>>,
+    ) -> PyResult<Self> {
+        let skymap = Skymap::from_arrays(nside, prob, distmu, distsigma, distnorm)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+        Ok(Self { inner: skymap })
+    }
+
     /// HEALPix NSIDE parameter.
     #[getter]
     fn nside(&self) -> u32 {
@@ -63,7 +85,7 @@ impl PySkymap {
     ///     hw_dec: Half-width in Dec direction (degrees)
     ///
     /// Returns:
-    ///     dict with keys: prob_2d, area_deg2, n_pixels
+    ///     CoverageResult with prob_2d, area_deg2, n_pixels, covered mask
     #[pyo3(signature = (obs_ra, obs_dec, hw_ra, hw_dec))]
     fn coverage_2d(
         &self,
@@ -108,6 +130,12 @@ impl PyCoverageResult {
         self.inner.n_pixels
     }
 
+    /// Per-pixel coverage mask (list of bools, length = skymap npix).
+    #[getter]
+    fn covered(&self) -> Vec<bool> {
+        self.inner.covered.clone()
+    }
+
     /// Compute 3D distance-weighted probability for the covered pixels.
     ///
     /// Args:
@@ -127,6 +155,41 @@ impl PyCoverageResult {
         skymap
             .inner
             .coverage_3d(&self.inner.covered, d_max_mpc, n_samples, &mut rng)
+    }
+
+    /// Compute 3D probability with per-pixel detection horizons.
+    ///
+    /// Like coverage_3d, but each pixel has its own d_max (e.g. from
+    /// a time-dependent kilonova model). Pixels with d_max <= 0 are skipped.
+    ///
+    /// Args:
+    ///     skymap: The Skymap object (for distance posteriors)
+    ///     d_max_per_pixel: Per-pixel max distance in Mpc (length = npix)
+    ///     n_samples: Number of Monte Carlo samples per pixel (default 2000)
+    ///     seed: Random seed (default 42)
+    #[pyo3(signature = (skymap, d_max_per_pixel, n_samples=2000, seed=42))]
+    fn coverage_3d_variable(
+        &self,
+        skymap: &PySkymap,
+        d_max_per_pixel: Vec<f64>,
+        n_samples: usize,
+        seed: u64,
+    ) -> PyResult<f64> {
+        if d_max_per_pixel.len() != skymap.inner.npix() {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!(
+                    "d_max_per_pixel length {} != skymap npix {}",
+                    d_max_per_pixel.len(), skymap.inner.npix()
+                ),
+            ));
+        }
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        Ok(skymap.inner.coverage_3d_variable(
+            &self.inner.covered,
+            &d_max_per_pixel,
+            n_samples,
+            &mut rng,
+        ))
     }
 
     fn __repr__(&self) -> String {

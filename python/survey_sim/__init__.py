@@ -26,6 +26,8 @@ from survey_sim.survey_sim import (
     RateSummary,
     TooSimulationResult,
     run_too_simulation,
+    Skymap,
+    CoverageResult,
 )
 
 

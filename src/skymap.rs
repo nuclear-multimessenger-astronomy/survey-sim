@@ -86,6 +86,46 @@ impl Skymap {
         })
     }
 
+    /// Construct a skymap from arrays (e.g. from Python after rasterization).
+    pub fn from_arrays(
+        nside: u32,
+        prob: Vec<f64>,
+        distmu: Option<Vec<f64>>,
+        distsigma: Option<Vec<f64>>,
+        distnorm: Option<Vec<f64>>,
+    ) -> Result<Self, SkymapError> {
+        if !nside.is_power_of_two() || nside == 0 {
+            return Err(SkymapError::Invalid(format!(
+                "NSIDE must be a power of 2, got {}",
+                nside
+            )));
+        }
+        let depth = nside.trailing_zeros() as u8;
+        let npix = 12 * (nside as usize) * (nside as usize);
+        if prob.len() != npix {
+            return Err(SkymapError::Invalid(format!(
+                "PROB length {} != expected {} for NSIDE={}",
+                prob.len(), npix, nside
+            )));
+        }
+        if let Some(ref v) = distmu {
+            if v.len() != npix {
+                return Err(SkymapError::Invalid("DISTMU length mismatch".into()));
+            }
+        }
+        if let Some(ref v) = distsigma {
+            if v.len() != npix {
+                return Err(SkymapError::Invalid("DISTSIGMA length mismatch".into()));
+            }
+        }
+        if let Some(ref v) = distnorm {
+            if v.len() != npix {
+                return Err(SkymapError::Invalid("DISTNORM length mismatch".into()));
+            }
+        }
+        Ok(Self { nside, depth, prob, distmu, distsigma, distnorm })
+    }
+
     /// Number of pixels in the skymap.
     pub fn npix(&self) -> usize {
         self.prob.len()
@@ -194,6 +234,66 @@ impl Skymap {
             n_pixels: covered.iter().filter(|&&c| c).count(),
             covered,
         }
+    }
+
+    /// Compute 3D distance-weighted probability with per-pixel detection horizons.
+    ///
+    /// Like `coverage_3d`, but each pixel has its own maximum detectable distance.
+    /// This supports time-dependent kilonova models where the detection horizon
+    /// depends on when each pixel was observed.
+    ///
+    /// `d_max_per_pixel` must have length == `self.npix()`. Pixels with
+    /// `d_max_per_pixel[i] <= 0` are skipped.
+    pub fn coverage_3d_variable(
+        &self,
+        covered: &[bool],
+        d_max_per_pixel: &[f64],
+        n_samples: usize,
+        rng: &mut impl Rng,
+    ) -> f64 {
+        let distmu = match &self.distmu {
+            Some(d) => d,
+            None => return 0.0,
+        };
+        let distsigma = match &self.distsigma {
+            Some(d) => d,
+            None => return 0.0,
+        };
+
+        let mut prob_3d = 0.0;
+
+        for (i, &is_covered) in covered.iter().enumerate() {
+            if !is_covered || self.prob[i] < 1e-10 {
+                continue;
+            }
+            let d_max = d_max_per_pixel[i];
+            if d_max <= 0.0 {
+                continue;
+            }
+
+            let mu = distmu[i];
+            let sigma = distsigma[i];
+            if sigma <= 0.0 || mu.is_nan() || mu.is_infinite() || mu <= 0.0 {
+                continue;
+            }
+
+            let normal = match Normal::new(mu, sigma) {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+
+            let mut n_detectable = 0usize;
+            for _ in 0..n_samples {
+                let d: f64 = normal.sample(rng).abs();
+                if d < d_max {
+                    n_detectable += 1;
+                }
+            }
+
+            prob_3d += self.prob[i] * (n_detectable as f64 / n_samples as f64);
+        }
+
+        prob_3d
     }
 
     /// Compute 3D distance-weighted probability for observed pixels.
