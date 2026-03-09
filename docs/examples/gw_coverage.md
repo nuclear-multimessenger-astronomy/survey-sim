@@ -57,7 +57,7 @@ The simplest 3D approach uses a flat detection horizon set by a fixed absolute m
 
 At M = -15 (fainter KN), the LALInference 3D probability is 20.4%, matching the paper's 21%. This suggests the paper's effective coverage accounts for a detection horizon cut similar to this brightness level.
 
-#### Time-dependent Bu2026 kilonova model
+#### Time-dependent Bu2026 kilonova model (per-RC)
 
 A more physical approach uses the full [Bu2026](https://arxiv.org/abs/2012.04810) kilonova model via [fiesta](https://github.com/nuclear-multimessenger-astronomy/fiesta) with AT2017gfo best-fit parameters:
 
@@ -71,7 +71,7 @@ A more physical approach uses the full [Bu2026](https://arxiv.org/abs/2012.04810
 | Y_e,wind | 0.35 |
 | inclination | 0.45 rad |
 
-The kilonova fades rapidly, so the detection horizon depends on when each pixel was actually observed relative to the GW trigger:
+Each ZTF readout channel observation gets its own detection horizon `d_max`, computed from the Bu2026 model at that observation's time-since-event and limiting magnitude. For pixels covered by multiple observations, the best (highest) `d_max` is kept. This is computed entirely in Rust via `survey_sim.Skymap.coverage_2d_3d()`.
 
 | Time post-event | Detection horizon (Mpc) |
 |-----------------|------------------------|
@@ -81,15 +81,15 @@ The kilonova fades rapidly, so the detection horizon depends on when each pixel 
 | 1.5 days | 220 |
 | 2.0 days | 160 |
 
-For each observed pixel, a per-pixel `d_max` is computed from the Bu2026 model given the pixel's actual observation time and depth, then passed to `survey_sim.CoverageResult.coverage_3d_variable()` for Rust Monte Carlo integration:
+Per-observation statistics: Night 1 median `d_max` = 220 Mpc, Night 2 median `d_max` = 170 Mpc.
 
-| Skymap | Bu2026 3D Prob |
-|--------|---------------|
-| **BAYESTAR** | 47.3% |
-| **LALInference** | 25.5% |
-| **Publication (2020)** | 36.2% |
+| Skymap | Bu2026 3D (Total) | Bu2026 3D (Night 1 only) |
+|--------|-------------------|--------------------------|
+| **BAYESTAR** | 48.0% | 39.3% |
+| **LALInference** | 25.8% | 20.4% |
+| **Publication (2020)** | 36.9% | 30.2% |
 
-The Bu2026 time-dependent 3D coverage is lower than the flat M=-16 case because: (1) the KN fades significantly between Night 1 and Night 2, reducing the effective horizon for later observations; and (2) the proper distance-dependent weighting accounts for the shape of the luminosity distance posterior at each pixel. 95% of observed pixels were from Night 1 (median dt = 0.30 days), with a median detection horizon of 240 Mpc.
+The LALInference Night 1 Bu2026 3D (20.4%) matches the paper's reported 21% total coverage, consistent with the paper using only ToO data and accounting for processing failures.
 
 ### Depth Statistics
 
@@ -120,9 +120,8 @@ The coverage computation is split between Python (I/O, model evaluation) and Rus
 1. **Load skymap** (Python): `ligo.skymap.io.read_sky_map()` reads multi-order FITS, `rasterize()` converts to flat NSIDE=256
 2. **Construct Skymap** (Rust): `survey_sim.Skymap.from_arrays(nside, prob, distmu, distsigma, distnorm)`
 3. **Load ZTF observations** (Python): boom HDF5 files provide per-RC (ra, dec, depth, mjd) data
-4. **Compute 2D coverage** (Rust): `skymap.coverage_2d(obs_ra, obs_dec, hw_ra, hw_dec)` uses HEALPix cone queries with rectangular filtering
-5. **Compute 3D coverage** (Rust): `result.coverage_3d(skymap, d_max)` for flat horizons, or `result.coverage_3d_variable(skymap, d_max_per_pixel)` for time-dependent models
-6. **Bu2026 model** (Python): fiesta evaluates the kilonova model on a (time, distance) grid; `scipy.interpolate.RegularGridInterpolator` maps per-pixel observation times to detection horizons
+4. **Compute per-RC d_max** (Python): Bu2026 model on a (time, distance) grid → `RegularGridInterpolator` → per-observation detection horizon
+5. **Compute 2D+3D coverage** (Rust): `skymap.coverage_2d_3d(obs_ra, obs_dec, hw_ra, hw_dec, obs_d_max)` — resolves overlapping pixels by keeping the best d_max, then runs Monte Carlo 3D integration
 
 ```python
 from ligo.skymap.io import read_sky_map
@@ -144,13 +143,16 @@ skymap = Skymap.from_arrays(
     skymap_flat["DISTNORM"].tolist(),
 )
 
-# 2D coverage: pass per-RC observation centers + half-widths
-result = skymap.coverage_2d(obs_ra.tolist(), obs_dec.tolist(), 0.432, 0.431)
-print(f"2D coverage: {result.prob_2d:.1%}, {result.area_deg2:.0f} deg²")
+# 2D coverage only
+result_2d = skymap.coverage_2d(obs_ra, obs_dec, 0.432, 0.431)
+print(f"2D: {result_2d.prob_2d:.1%}, {result_2d.area_deg2:.0f} deg²")
 
-# 3D coverage with flat horizon
-p3d = result.coverage_3d(skymap, d_max_mpc=251, n_samples=2000, seed=42)
-
-# 3D coverage with per-pixel horizons (from Bu2026 model)
-p3d_var = result.coverage_3d_variable(skymap, d_max_per_pixel.tolist(), n_samples=2000, seed=42)
+# Combined 2D+3D with per-observation detection horizons
+# obs_d_max[k] = max detectable distance (Mpc) for observation k
+result = skymap.coverage_2d_3d(
+    obs_ra, obs_dec, 0.432, 0.431,
+    obs_d_max,  # per-RC d_max from Bu2026 model
+    n_samples=2000, seed=42,
+)
+print(f"2D: {result.prob_2d:.1%}, 3D: {result.prob_3d:.1%}")
 ```

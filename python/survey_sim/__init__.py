@@ -28,6 +28,7 @@ from survey_sim.survey_sim import (
     run_too_simulation,
     Skymap,
     CoverageResult,
+    CoverageResult3D,
 )
 
 

@@ -102,6 +102,44 @@ impl PySkymap {
         let result = self.inner.coverage_2d(&obs_ra, &obs_dec, hw_ra, hw_dec);
         Ok(PyCoverageResult { inner: result })
     }
+
+    /// Combined 2D + 3D coverage with per-observation detection horizons.
+    ///
+    /// Each observation (RC pointing) has its own d_max (Mpc), computed from
+    /// a time-dependent model given the observation's time and depth. For pixels
+    /// covered by multiple observations, the best (highest) d_max is used.
+    ///
+    /// Args:
+    ///     obs_ra: RA of observation centers (degrees)
+    ///     obs_dec: Dec of observation centers (degrees)
+    ///     hw_ra: Half-width in RA direction (degrees)
+    ///     hw_dec: Half-width in Dec direction (degrees)
+    ///     obs_d_max: Per-observation detection horizon in Mpc
+    ///     n_samples: MC samples per pixel (default 2000)
+    ///     seed: Random seed (default 42)
+    #[pyo3(signature = (obs_ra, obs_dec, hw_ra, hw_dec, obs_d_max, n_samples=2000, seed=42))]
+    fn coverage_2d_3d(
+        &self,
+        obs_ra: Vec<f64>,
+        obs_dec: Vec<f64>,
+        hw_ra: f64,
+        hw_dec: f64,
+        obs_d_max: Vec<f64>,
+        n_samples: usize,
+        seed: u64,
+    ) -> PyResult<PyCoverageResult3D> {
+        let n = obs_ra.len();
+        if obs_dec.len() != n || obs_d_max.len() != n {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "obs_ra, obs_dec, and obs_d_max must have the same length",
+            ));
+        }
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        let result = self.inner.coverage_2d_3d(
+            &obs_ra, &obs_dec, hw_ra, hw_dec, &obs_d_max, n_samples, &mut rng,
+        );
+        Ok(PyCoverageResult3D { inner: result })
+    }
 }
 
 /// Result of a 2D coverage computation.
@@ -200,8 +238,61 @@ impl PyCoverageResult {
     }
 }
 
+/// Result of a combined 2D+3D coverage computation.
+#[pyclass(name = "CoverageResult3D")]
+pub struct PyCoverageResult3D {
+    inner: survey_sim::skymap::CoverageResult3D,
+}
+
+#[pymethods]
+impl PyCoverageResult3D {
+    /// Integrated 2D probability covered.
+    #[getter]
+    fn prob_2d(&self) -> f64 {
+        self.inner.prob_2d
+    }
+
+    /// Integrated 3D probability (using best per-pixel d_max).
+    #[getter]
+    fn prob_3d(&self) -> f64 {
+        self.inner.prob_3d
+    }
+
+    /// Sky area covered in square degrees.
+    #[getter]
+    fn area_deg2(&self) -> f64 {
+        self.inner.area_deg2
+    }
+
+    /// Number of HEALPix pixels covered.
+    #[getter]
+    fn n_pixels(&self) -> usize {
+        self.inner.n_pixels
+    }
+
+    /// Per-pixel coverage mask.
+    #[getter]
+    fn covered(&self) -> Vec<bool> {
+        self.inner.covered.clone()
+    }
+
+    /// Per-pixel best detection horizon (Mpc).
+    #[getter]
+    fn best_d_max(&self) -> Vec<f64> {
+        self.inner.best_d_max.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CoverageResult3D(prob_2d={:.4}, prob_3d={:.4}, area_deg2={:.0}, n_pixels={})",
+            self.inner.prob_2d, self.inner.prob_3d, self.inner.area_deg2, self.inner.n_pixels
+        )
+    }
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySkymap>()?;
     m.add_class::<PyCoverageResult>()?;
+    m.add_class::<PyCoverageResult3D>()?;
     Ok(())
 }

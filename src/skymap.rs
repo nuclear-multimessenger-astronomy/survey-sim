@@ -296,6 +296,91 @@ impl Skymap {
         prob_3d
     }
 
+    /// Combined 2D + 3D coverage from rectangular observations with per-observation
+    /// detection horizons.
+    ///
+    /// Each observation has its own `d_max` (e.g. from a time-dependent kilonova
+    /// model evaluated at that observation's time and depth). For pixels covered
+    /// by multiple observations, the best (highest) `d_max` is kept — this
+    /// corresponds to the observation with the deepest effective sensitivity.
+    ///
+    /// Returns a `CoverageResult3D` with 2D coverage, the per-pixel best `d_max`,
+    /// and the integrated 3D probability.
+    pub fn coverage_2d_3d(
+        &self,
+        obs_ra: &[f64],
+        obs_dec: &[f64],
+        hw_ra_deg: f64,
+        hw_dec_deg: f64,
+        obs_d_max: &[f64],
+        n_samples: usize,
+        rng: &mut impl Rng,
+    ) -> CoverageResult3D {
+        assert_eq!(obs_ra.len(), obs_dec.len());
+        assert_eq!(obs_ra.len(), obs_d_max.len());
+
+        let npix = self.npix();
+        let mut best_d_max = vec![0.0_f64; npix];
+        let mut covered = vec![false; npix];
+        let radius_deg = (hw_ra_deg * hw_ra_deg + hw_dec_deg * hw_dec_deg).sqrt();
+
+        // Phase 1: find covered pixels, keep best d_max per pixel
+        for (k, (&ra, &dec)) in obs_ra.iter().zip(obs_dec.iter()).enumerate() {
+            let d_max_k = obs_d_max[k];
+
+            let cone = nested::cone_coverage_approx(
+                self.depth,
+                ra.to_radians(),
+                dec.to_radians().clamp(
+                    -std::f64::consts::FRAC_PI_2 + 1e-10,
+                    std::f64::consts::FRAC_PI_2 - 1e-10,
+                ),
+                radius_deg.to_radians(),
+            );
+
+            let cos_dec = dec.to_radians().cos().max(1e-10);
+
+            for ipix in cone.flat_iter() {
+                let (lon, lat) = nested::center(self.depth, ipix);
+                let pix_ra = lon.to_degrees();
+                let pix_dec = lat.to_degrees();
+
+                let dra = ((pix_ra - ra + 180.0).rem_euclid(360.0) - 180.0).abs();
+                let ddec = (pix_dec - dec).abs();
+
+                if dra * cos_dec <= hw_ra_deg && ddec <= hw_dec_deg {
+                    let idx = ipix as usize;
+                    covered[idx] = true;
+                    if d_max_k > best_d_max[idx] {
+                        best_d_max[idx] = d_max_k;
+                    }
+                }
+            }
+        }
+
+        // 2D statistics
+        let prob_2d: f64 = covered.iter().enumerate()
+            .filter(|(_, &c)| c)
+            .map(|(i, _)| self.prob[i])
+            .sum();
+        let pixel_area_sr = 4.0 * std::f64::consts::PI / (npix as f64);
+        let pixel_area_deg2 = pixel_area_sr * (180.0 / std::f64::consts::PI).powi(2);
+        let n_covered = covered.iter().filter(|&&c| c).count();
+        let area_deg2 = n_covered as f64 * pixel_area_deg2;
+
+        // Phase 2: 3D MC integration using best d_max per pixel
+        let prob_3d = self.coverage_3d_variable(&covered, &best_d_max, n_samples, rng);
+
+        CoverageResult3D {
+            prob_2d,
+            prob_3d,
+            area_deg2,
+            n_pixels: n_covered,
+            covered,
+            best_d_max,
+        }
+    }
+
     /// Compute 3D distance-weighted probability for observed pixels.
     ///
     /// For each observed pixel, samples from the distance posterior and computes
@@ -351,6 +436,22 @@ impl Skymap {
 
         prob_3d
     }
+}
+
+/// Result of a combined 2D+3D coverage computation with per-observation horizons.
+pub struct CoverageResult3D {
+    /// Integrated 2D probability covered.
+    pub prob_2d: f64,
+    /// Integrated 3D probability (using best per-pixel d_max).
+    pub prob_3d: f64,
+    /// Sky area covered in square degrees.
+    pub area_deg2: f64,
+    /// Number of HEALPix pixels covered.
+    pub n_pixels: usize,
+    /// Per-pixel coverage mask.
+    pub covered: Vec<bool>,
+    /// Per-pixel best detection horizon (Mpc). 0 if not covered.
+    pub best_d_max: Vec<f64>,
 }
 
 /// Result of a 2D coverage computation.
