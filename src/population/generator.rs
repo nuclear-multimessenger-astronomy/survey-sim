@@ -535,6 +535,14 @@ pub struct TdePopulation {
     pub lf_n0: f64,       // Mpc^-3 yr^-1 dex^-1
     pub lf_mag_min: f64,  // brightest (most negative M_g)
     pub lf_mag_max: f64,  // faintest (least negative M_g)
+    /// Whether to apply Karmen+2025 rate evolution factors: F(z) × N_BH(z) × O(z).
+    pub use_rate_evolution: bool,
+    /// BHMF model for rate evolution (Illustris or Shankar).
+    pub bhmf_model: crate::efficiency::tde::BhmfModel,
+    /// Merger enhancement E factor (median of U[10,100] = 30).
+    pub evolution_e_factor: f64,
+    /// Density evolution slope α (median of U[1,2] = 1.5).
+    pub evolution_density_alpha: f64,
     pub mjd_min: f64,
     pub mjd_max: f64,
     pub cosmology: Cosmology,
@@ -588,6 +596,10 @@ impl TdePopulation {
             lf_n0: 2.87e-7,
             lf_mag_min: -24.0,
             lf_mag_max: -15.0,
+            use_rate_evolution: false,
+            bhmf_model: crate::efficiency::tde::BhmfModel::Illustris,
+            evolution_e_factor: 30.0,
+            evolution_density_alpha: 1.5,
             mjd_min,
             mjd_max,
             cosmology: Cosmology::default(),
@@ -618,10 +630,30 @@ impl TdePopulation {
             lf_n0: n0,
             lf_mag_min: mag_min,
             lf_mag_max: mag_max,
+            use_rate_evolution: false,
+            bhmf_model: crate::efficiency::tde::BhmfModel::Illustris,
+            evolution_e_factor: 30.0,
+            evolution_density_alpha: 1.5,
             mjd_min,
             mjd_max,
             cosmology: Cosmology::default(),
         }
+    }
+
+    /// LF-based constructor with Karmen+2025 rate evolution.
+    ///
+    /// Applies F(z) × N_BH(z) × O(z) weighting to the redshift distribution,
+    /// accounting for galaxy evolution, BHMF decline, and dust obscuration.
+    pub fn from_luminosity_function_evolved(
+        z_max: f64,
+        bhmf_model: crate::efficiency::tde::BhmfModel,
+        mjd_min: f64,
+        mjd_max: f64,
+    ) -> Self {
+        let mut pop = Self::from_luminosity_function(z_max, mjd_min, mjd_max);
+        pop.use_rate_evolution = true;
+        pop.bhmf_model = bhmf_model;
+        pop
     }
 
     /// Draw a peak absolute magnitude from the broken power-law LF via rejection sampling.
@@ -645,10 +677,36 @@ impl TdePopulation {
 
 impl PopulationGenerator for TdePopulation {
     fn generate(&self, n: usize, rng: &mut dyn rand::RngCore) -> Vec<TransientInstance> {
-        let envelope = distributions::max_dvdz(self.z_max, &self.cosmology);
         let mut instances = Vec::with_capacity(n);
+
+        // Pre-compute rejection sampling envelope.
+        let (use_evolved, envelope) = if self.use_rate_evolution {
+            let env = distributions::max_dvdz_evolved(
+                self.z_max,
+                &self.cosmology,
+                &self.bhmf_model,
+                self.evolution_e_factor,
+                self.evolution_density_alpha,
+            );
+            (true, env)
+        } else {
+            (false, distributions::max_dvdz(self.z_max, &self.cosmology))
+        };
+
         for _ in 0..n {
-            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
+            let z = if use_evolved {
+                distributions::sample_redshift_evolved(
+                    self.z_max,
+                    &self.cosmology,
+                    &self.bhmf_model,
+                    self.evolution_e_factor,
+                    self.evolution_density_alpha,
+                    envelope,
+                    rng,
+                )
+            } else {
+                sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng)
+            };
             let d_l = self.cosmology.luminosity_distance(z);
             let (ra, dec) = sample_isotropic_sky(rng);
             let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);

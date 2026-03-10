@@ -1,5 +1,6 @@
 pub mod blastwave_model;
 pub mod cosmology;
+pub mod kcorrection;
 pub mod parametric;
 pub mod python_model;
 

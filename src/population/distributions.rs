@@ -1,5 +1,6 @@
 use rand::Rng;
 
+use crate::efficiency::tde::{self, BhmfModel};
 use crate::types::Cosmology;
 
 /// Compute the maximum dV/dz over [0, z_max] for rejection sampling envelope.
@@ -30,6 +31,61 @@ pub fn sample_redshift_volumetric(
         let z: f64 = rng.random::<f64>() * z_max;
         let dvdz = cosmo.dv_dz(z);
         let accept_prob = dvdz / envelope;
+        if rng.random::<f64>() < accept_prob {
+            return z;
+        }
+    }
+}
+
+/// Compute the maximum of dV/dz × W(z) over [0, z_max] for evolved rejection sampling.
+///
+/// W(z) = F(z, E, α) × N_BH(z) × O(z) / (1+z)
+/// The (1+z) factor converts observer-frame to source-frame rate.
+pub fn max_dvdz_evolved(
+    z_max: f64,
+    cosmo: &Cosmology,
+    bhmf: &BhmfModel,
+    e_factor: f64,
+    density_alpha: f64,
+) -> f64 {
+    let n_probe = 200;
+    let mut max_val: f64 = 0.0;
+    for i in 0..=n_probe {
+        let z = z_max * i as f64 / n_probe as f64;
+        let dvdz = cosmo.dv_dz(z);
+        let w = tde::galaxy_effects(z, e_factor, density_alpha)
+            * bhmf.evolution(z)
+            * tde::dust_obscuration(z)
+            / (1.0 + z);
+        let val = dvdz * w;
+        if val > max_val {
+            max_val = val;
+        }
+    }
+    max_val
+}
+
+/// Sample a redshift from the evolved TDE rate distribution.
+///
+/// dN/dz ∝ dV/dz × F(z) × N_BH(z) × O(z) / (1+z)
+/// This accounts for galaxy evolution, BHMF decline, and dust obscuration.
+pub fn sample_redshift_evolved(
+    z_max: f64,
+    cosmo: &Cosmology,
+    bhmf: &BhmfModel,
+    e_factor: f64,
+    density_alpha: f64,
+    envelope: f64,
+    rng: &mut (impl Rng + ?Sized),
+) -> f64 {
+    loop {
+        let z: f64 = rng.random::<f64>() * z_max;
+        let dvdz = cosmo.dv_dz(z);
+        let w = tde::galaxy_effects(z, e_factor, density_alpha)
+            * bhmf.evolution(z)
+            * tde::dust_obscuration(z)
+            / (1.0 + z);
+        let accept_prob = dvdz * w / envelope;
         if rng.random::<f64>() < accept_prob {
             return z;
         }

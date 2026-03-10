@@ -421,6 +421,100 @@ impl InstrumentConfig {
         }
     }
 
+    /// Built-in Nancy Grace Roman Space Telescope (HLTDS) instrument configuration.
+    ///
+    /// Roman High Latitude Time Domain Survey (HLTDS) NIR filters.
+    /// Filter depths from the Roman Exposure Time Calculator (ETC) per ROTAC 2025.
+    /// Two survey tiers: wide (~19 deg²) and deep (~6 deg²).
+    /// Single-visit 5σ depths listed here are for the wide tier.
+    pub fn roman() -> Self {
+        Self {
+            name: "Roman HLTDS".to_string(),
+            description: Some(
+                "Nancy Grace Roman Space Telescope — High Latitude Time Domain Survey".to_string(),
+            ),
+            telescope: TelescopeConfig {
+                aperture_m: 2.4,
+                location: Location::Space,
+            },
+            detector: DetectorConfig {
+                plate_scale_arcsec: 0.11,
+                read_noise_e: 8.5,       // H4RG-10 typical
+                dark_current_e_per_s: 0.015, // H4RG-10 at 95K
+                gain: 1.0,
+                fov_deg2: 0.281, // WFI: 0.281 deg² (18 detectors × 4096² pix)
+            },
+            bands: HashMap::from([
+                (
+                    "F062".to_string(),
+                    BandConfig {
+                        central_wavelength_nm: 620.0,
+                        width_nm: 180.0,
+                        typical_seeing_arcsec: 0.11, // diffraction-limited
+                        single_visit_depth: 25.95,
+                        sky_brightness: 23.0,
+                    },
+                ),
+                (
+                    "F087".to_string(),
+                    BandConfig {
+                        central_wavelength_nm: 870.0,
+                        width_nm: 230.0,
+                        typical_seeing_arcsec: 0.11,
+                        single_visit_depth: 25.05,
+                        sky_brightness: 22.5,
+                    },
+                ),
+                (
+                    "F106".to_string(),
+                    BandConfig {
+                        central_wavelength_nm: 1060.0,
+                        width_nm: 280.0,
+                        typical_seeing_arcsec: 0.11,
+                        single_visit_depth: 25.20,
+                        sky_brightness: 22.0,
+                    },
+                ),
+                (
+                    "F129".to_string(),
+                    BandConfig {
+                        central_wavelength_nm: 1290.0,
+                        width_nm: 310.0,
+                        typical_seeing_arcsec: 0.13,
+                        single_visit_depth: 25.65,
+                        sky_brightness: 22.0,
+                    },
+                ),
+                (
+                    "F158".to_string(),
+                    BandConfig {
+                        central_wavelength_nm: 1580.0,
+                        width_nm: 380.0,
+                        typical_seeing_arcsec: 0.15,
+                        single_visit_depth: 26.10,
+                        sky_brightness: 22.0,
+                    },
+                ),
+            ]),
+            observing: ObservingConfig {
+                default_exposure_s: 146.0, // typical HLTDS visit
+                readout_s: 3.0,
+                slew_rate_deg_per_s: 1.0,
+                settle_s: 16.0,
+                min_altitude_deg: 0.0, // space — sun avoidance handled separately
+                max_airmass: 99.0,     // space
+                min_moon_sep_deg: 0.0, // space — no moon constraint
+            },
+            extinction_coefficients: HashMap::from([
+                ("F062".to_string(), 1.17), // NIR extinction: A_band/A_V
+                ("F087".to_string(), 0.83),
+                ("F106".to_string(), 0.64),
+                ("F129".to_string(), 0.48),
+                ("F158".to_string(), 0.36),
+            ]),
+        }
+    }
+
     /// Built-in Argus Array instrument configuration.
     pub fn argus() -> Self {
         Self {
@@ -527,6 +621,17 @@ mod tests {
         assert!(uvex.bands.contains_key("NUV"));
         assert!((uvex.detector.fov_deg2 - 12.25).abs() < 1e-2);
         assert!((uvex.telescope.aperture_m - 0.75).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_roman_builtin() {
+        let roman = InstrumentConfig::roman();
+        assert_eq!(roman.name, "Roman HLTDS");
+        assert_eq!(roman.bands.len(), 5);
+        assert!(roman.bands.contains_key("F062"));
+        assert!(roman.bands.contains_key("F158"));
+        assert!((roman.telescope.aperture_m - 2.4).abs() < 1e-3);
+        assert!((roman.bands["F062"].single_visit_depth - 25.95).abs() < 1e-2);
     }
 
     #[test]

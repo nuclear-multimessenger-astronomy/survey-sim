@@ -29,6 +29,9 @@ from survey_sim.survey_sim import (
     Skymap,
     CoverageResult,
     CoverageResult3D,
+    TdeRateForecast,
+    blackbody_k_correction,
+    blackbody_k_correction_instrument,
 )
 
 
@@ -167,4 +170,7 @@ __all__ = [
     "RateSummary",
     "TooSimulationResult",
     "run_too_simulation",
+    "TdeRateForecast",
+    "blackbody_k_correction",
+    "blackbody_k_correction_instrument",
 ]

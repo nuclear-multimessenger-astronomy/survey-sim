@@ -1,4 +1,5 @@
 pub mod rates;
+pub mod tde;
 
 use std::collections::HashMap;
 

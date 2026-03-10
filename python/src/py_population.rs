@@ -205,25 +205,44 @@ pub struct PyTdePopulation {
     pub(crate) z_max: f64,
     pub(crate) peak_abs_mag: f64,
     pub(crate) use_luminosity_function: bool,
+    pub(crate) use_rate_evolution: bool,
+    pub(crate) bhmf_model: String,
 }
 
 #[pymethods]
 impl PyTdePopulation {
     #[new]
-    #[pyo3(signature = (rate=100.0, z_max=0.5, peak_abs_mag=-20.0, use_luminosity_function=false))]
-    fn new(rate: f64, z_max: f64, peak_abs_mag: f64, use_luminosity_function: bool) -> Self {
+    #[pyo3(signature = (rate=100.0, z_max=0.5, peak_abs_mag=-20.0,
+                         use_luminosity_function=false, use_rate_evolution=false,
+                         bhmf_model="illustris"))]
+    fn new(
+        rate: f64,
+        z_max: f64,
+        peak_abs_mag: f64,
+        use_luminosity_function: bool,
+        use_rate_evolution: bool,
+        bhmf_model: &str,
+    ) -> Self {
         Self {
             rate,
             z_max,
             peak_abs_mag,
             use_luminosity_function,
+            use_rate_evolution,
+            bhmf_model: bhmf_model.to_string(),
         }
     }
 }
 
 impl PyTdePopulation {
     pub fn to_generator(&self, mjd_min: f64, mjd_max: f64) -> TdePopulation {
-        if self.use_luminosity_function {
+        if self.use_luminosity_function && self.use_rate_evolution {
+            let bhmf = match self.bhmf_model.as_str() {
+                "shankar" => survey_sim::efficiency::tde::BhmfModel::Shankar,
+                _ => survey_sim::efficiency::tde::BhmfModel::Illustris,
+            };
+            TdePopulation::from_luminosity_function_evolved(self.z_max, bhmf, mjd_min, mjd_max)
+        } else if self.use_luminosity_function {
             TdePopulation::from_luminosity_function(self.z_max, mjd_min, mjd_max)
         } else {
             TdePopulation::new(self.rate, self.z_max, self.peak_abs_mag, mjd_min, mjd_max)
