@@ -535,7 +535,7 @@ pub struct TdePopulation {
     pub lf_n0: f64,       // Mpc^-3 yr^-1 dex^-1
     pub lf_mag_min: f64,  // brightest (most negative M_g)
     pub lf_mag_max: f64,  // faintest (least negative M_g)
-    /// Whether to apply Karmen+2025 rate evolution factors: F(z) × N_BH(z) × O(z).
+    /// Whether to apply Karmen+2026 rate evolution factors: F(z) × N_BH(z) × O(z).
     pub use_rate_evolution: bool,
     /// BHMF model for rate evolution (Illustris or Shankar).
     pub bhmf_model: crate::efficiency::tde::BhmfModel,
@@ -640,7 +640,7 @@ impl TdePopulation {
         }
     }
 
-    /// LF-based constructor with Karmen+2025 rate evolution.
+    /// LF-based constructor with Karmen+2026 rate evolution.
     ///
     /// Applies F(z) × N_BH(z) × O(z) weighting to the redshift distribution,
     /// accounting for galaxy evolution, BHMF decline, and dust obscuration.

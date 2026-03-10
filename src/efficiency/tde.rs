@@ -1,4 +1,4 @@
-//! Semi-analytical TDE rate forecast following Karmen et al. (2025, arXiv:2602.04947).
+//! Semi-analytical TDE rate forecast following Karmen et al. (2026, arXiv:2602.04947).
 //!
 //! Computes annual TDE detection rates for survey configurations by integrating:
 //!
@@ -266,7 +266,7 @@ pub struct TdeRateResult {
 
 /// Compute annual TDE detection rate for a survey configuration.
 ///
-/// Implements Karmen+2025 Eq. 1 with Monte Carlo over uncertain parameters:
+/// Implements Karmen+2026 Eq. 1 with Monte Carlo over uncertain parameters:
 /// - E: merger enhancement factor, U(10, 100)
 /// - density_alpha: density evolution slope, U(1, 2)
 pub fn compute_tde_rate(

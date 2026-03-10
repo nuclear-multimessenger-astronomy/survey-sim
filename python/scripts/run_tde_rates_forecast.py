@@ -2,7 +2,7 @@
 """
 Reproduce TDE rate forecasts for Rubin LSST and Roman HLTDS.
 
-Implements the semi-analytical model from Karmen et al. (2025, arXiv:2602.04947):
+Implements the semi-analytical model from Karmen et al. (2026, arXiv:2602.04947):
   Gamma_TDE = integral_0^z_Ly  eps(z) F(z) N_BH(z) R0(z,lambda) O(z) dz
 
 where:
@@ -319,7 +319,7 @@ def tde_visibility_time_vectorized(log_lgs, m_limit, z, d_l_pc):
 def compute_tde_rate(survey, bhmf_model="illustris", n_mc=100):
     """Compute annual TDE detection rate for a survey.
 
-    Follows Karmen+2025 Eq. 1:
+    Follows Karmen+2026 Eq. 1:
       Gamma_TDE = integral eps(z) F(z) N_BH(z) R_0(z, lambda) O(z) dz
 
     where R_0(z) = (1/(1+z)) * dV/dz * integral_{L_min(z)}^{L_max} phi(L_g) dL_g

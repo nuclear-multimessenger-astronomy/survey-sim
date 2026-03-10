@@ -8,12 +8,12 @@ Runs five configurations:
   1. With host brightness cut (m0=22.5): conservative, requires TDE to
      outshine host nucleus. Comparable to spectroscopically confirmed samples.
   2. Without host brightness cut: all photometrically detectable TDEs.
-  3-4. With Karmen+2025 rate evolution F(z) × N_BH(z) × O(z), z_max=2.96
+  3-4. With Karmen+2026 rate evolution F(z) × N_BH(z) × O(z), z_max=2.96
      (Lyman-alpha cutoff for g-band). One for each BHMF model.
   5. With host cut + rate evolution (Illustris): the "realistic spectroscopic" case.
 
 Finally, compares injection results with the Rust semi-analytical forecast
-from Karmen et al. (2025).
+from Karmen et al. (2026).
 """
 import sys
 sys.path.insert(0, "/fred/oz480/mcoughli/simulations/survey-sim/python")
@@ -47,7 +47,7 @@ SEED = 42
 RATE = 829.0  # LF-integrated rate (Yao+2023, M_g -24 to -15), Gpc^-3 yr^-1
 Z_LY_G = 2.96  # Lyman-alpha cutoff for g-band (482 nm)
 
-# Evolution parameters (median of Karmen+2025 MC ranges)
+# Evolution parameters (median of Karmen+2026 MC ranges)
 E_FACTOR = 30.0   # median of U[10, 100]
 DENSITY_ALPHA = 1.5  # median of U[1, 2]
 
@@ -234,9 +234,9 @@ results.append(run_sim(survey, z_max=Z_LY_G, host_cut=True,
                        label="z<2.96, host cut, Illustris"))
 
 # =========================================================================
-# Semi-analytical comparison (Karmen+2025, Rust)
+# Semi-analytical comparison (Karmen+2026, Rust)
 # =========================================================================
-print("--- Semi-analytical forecast (Karmen+2025, Rust) ---")
+print("--- Semi-analytical forecast (Karmen+2026, Rust) ---")
 forecast = TdeRateForecast(temperature_k=30000.0, n_mc=200, seed=42)
 t0 = time.time()
 r_ill = forecast.compute_rate("rubin", "illustris")
@@ -269,15 +269,15 @@ print(f"{'Analytical (Illustris)':<38s} {'2.96':>5s} {'(ε=1)':>8s}"
       f" {r_ill['N_median']:>10,.0f} {r_ill['N_median']*duration:>10,.0f}")
 print(f"{'Analytical (Shankar)':<38s} {'2.96':>5s} {'(ε=1)':>8s}"
       f" {r_sha['N_median']:>10,.0f} {r_sha['N_median']*duration:>10,.0f}")
-print(f"{'Karmen+2025 (Illustris)':<38s} {'2.96':>5s} {'(ε=1)':>8s}"
+print(f"{'Karmen+2026 (Illustris)':<38s} {'2.96':>5s} {'(ε=1)':>8s}"
       f" {'26,873':>10s} {'268,730':>10s}")
-print(f"{'Karmen+2025 (Shankar)':<38s} {'2.96':>5s} {'(ε=1)':>8s}"
+print(f"{'Karmen+2026 (Shankar)':<38s} {'2.96':>5s} {'(ε=1)':>8s}"
       f" {'13,803':>10s} {'138,030':>10s}")
 print()
 
 print("Notes:")
 print("  - 'no evol' = constant local rate (829 Gpc^-3/yr)")
-print("  - 'Illustris/Shankar' = Karmen+2025 F(z)×N_BH(z)×O(z) rate evolution")
+print("  - 'Illustris/Shankar' = Karmen+2026 F(z)×N_BH(z)×O(z) rate evolution")
 print("  - 'host cut' = logistic brightness cut requiring TDE to outshine host (m0=22.5)")
 print("  - Analytical assumes ε=1 (perfect cadence); injection uses real Rubin cadence")
 print("  - Remaining gap: injection has cadence losses, analytical does not")

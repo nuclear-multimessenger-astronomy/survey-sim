@@ -3,8 +3,8 @@
 This page documents TDE detection simulations and rate forecasts, covering:
 
 1. **ZTF validation** — reproducing the Yao et al. (2023) spectroscopic sample
-2. **Rubin LSST injection predictions** — with and without host brightness cuts, with Karmen et al. (2025) rate evolution
-3. **Semi-analytical rate forecasts** — reproducing Karmen et al. (2025) Table 1 via Rust
+2. **Rubin LSST injection predictions** — with and without host brightness cuts, with Karmen et al. (2026) rate evolution
+3. **Semi-analytical rate forecasts** — reproducing Karmen et al. (2026) Table 1 via Rust
 4. **Injection vs analytical comparison** — measuring real cadence efficiency
 
 All injection simulations use the Yao et al. (2023) broken power-law luminosity function with a parametric TDE lightcurve model evaluated entirely in Rust.
@@ -48,9 +48,9 @@ $$\phi(L_g) = \frac{N_0}{\left(L_g / L_\mathrm{bk}\right)^{\gamma_1} + \left(L_g
 
 Integrating from $M_g = -24$ to $-15$ gives a total local volumetric rate of **~829 Gpc⁻³ yr⁻¹**.
 
-### Redshift-dependent rate evolution (Karmen et al. 2025)
+### Redshift-dependent rate evolution (Karmen et al. 2026)
 
-The local TDE rate evolves with redshift due to several physical effects. The total annual detection rate is given by Karmen+2025 Eq. 1:
+The local TDE rate evolves with redshift due to several physical effects. The total annual detection rate is given by Karmen+2026 Eq. 1:
 
 $$\Gamma_\mathrm{TDE} = \int_0^{z_\mathrm{Ly}(\lambda)} \epsilon(z)\, \mathcal{F}(z)\, N_\mathrm{BH}(z)\, R_0(z, \lambda)\, \mathcal{O}(z)\, dz$$
 
@@ -172,7 +172,7 @@ survey = SurveyStore.from_rubin("baseline_v5.1.1_10yrs.db", nside=64)
 # Constant local rate (no evolution)
 pop = TdePopulation(z_max=0.8, use_luminosity_function=True)
 
-# With Karmen+2025 rate evolution to Lyman-alpha cutoff
+# With Karmen+2026 rate evolution to Lyman-alpha cutoff
 pop_evolved = TdePopulation(
     z_max=2.96, use_luminosity_function=True,
     use_rate_evolution=True, bhmf_model="illustris",
@@ -211,7 +211,7 @@ The host brightness cut requires $m_\mathrm{peak} \lesssim 22.5$, about 2 mag br
 
 - **No host cut, no evolution** (2,583/yr): All photometrically detectable TDEs at $z < 0.8$. The 4.7× increase over the host-cut case shows how many faint-end LF TDEs are lost to the brightness requirement.
 
-- **No host cut, Illustris evolution** (6,585/yr): Full photometric sample with Karmen+2025 rate evolution out to $z_\mathrm{Ly} = 2.96$. Galaxy-scale enhancements ($\mathcal{F}(z)$ up to ~27× at $z=2$) boost the high-redshift rate, partially offset by BHMF decline.
+- **No host cut, Illustris evolution** (6,585/yr): Full photometric sample with Karmen+2026 rate evolution out to $z_\mathrm{Ly} = 2.96$. Galaxy-scale enhancements ($\mathcal{F}(z)$ up to ~27× at $z=2$) boost the high-redshift rate, partially offset by BHMF decline.
 
 - **No host cut, Shankar evolution** (4,082/yr): Same but with faster BHMF decline ($\alpha = -1.46$ vs $-0.82$), giving ~40% fewer detections.
 
@@ -219,11 +219,11 @@ The host brightness cut requires $m_\mathrm{peak} \lesssim 22.5$, about 2 mag br
 
 ---
 
-## Semi-analytical rate forecasts (Karmen et al. 2025)
+## Semi-analytical rate forecasts (Karmen et al. 2026)
 
-The `TdeRateForecast` class reproduces the predictions from [Karmen et al. (2025, arXiv:2602.04947)](https://arxiv.org/abs/2602.04947) entirely in Rust. These assume perfect survey efficiency ($\epsilon = 1$) for time-domain surveys.
+The `TdeRateForecast` class reproduces the predictions from [Karmen et al. (2026, arXiv:2602.04947)](https://arxiv.org/abs/2602.04947) entirely in Rust. These assume perfect survey efficiency ($\epsilon = 1$) for time-domain surveys.
 
-### Comparison with Karmen et al. (2025) Table 1
+### Comparison with Karmen et al. (2026) Table 1
 
 Computed with `TdeRateForecast(temperature_k=30000, n_mc=200, seed=42)`:
 
@@ -370,7 +370,7 @@ The Rust implementation pre-computes cosmology, K-corrections, and the LF integr
 
 ## References
 
-- Karmen et al. (2025), [arXiv:2602.04947](https://arxiv.org/abs/2602.04947) — TDE rate forecasts for LSST, Roman, and JWST
+- Karmen et al. (2026), [arXiv:2602.04947](https://arxiv.org/abs/2602.04947) — TDE rate forecasts for LSST, Roman, and JWST
 - Yao et al. (2023), [arXiv:2303.06523](https://arxiv.org/abs/2303.06523) — ZTF TDE sample and g-band luminosity function
 - van Velzen (2021), [ApJ 908 4](https://doi.org/10.3847/1538-4357/abd1df) — TDE lightcurve parameterization
 - Shankar et al. (2009), [ApJ 690 20](https://doi.org/10.1088/0004-637X/690/1/20) — SMBH mass function evolution
