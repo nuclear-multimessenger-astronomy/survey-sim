@@ -49,8 +49,8 @@ survey-sim depends on the following local crates:
 
 | Crate | Path | Purpose |
 |-------|------|---------|
-| `lightcurve-fitting` | `../lightcurve-fitting` | Parametric lightcurve templates (Metzger, Bazin, Villar) |
-| `blastwave` | `/home/mcoughli/blastwave` | Relativistic blast wave hydrodynamics + afterglow radiation |
+| [`lightcurve-fitting`](https://github.com/boom-astro/lightcurve-fitting) | `../lightcurve-fitting` | Parametric lightcurve templates (Metzger, Bazin, Villar) |
+| [`blastwave`](https://github.com/nuclear-multimessenger-astronomy/blastwave) | `/home/mcoughli/blastwave` | Relativistic blast wave hydrodynamics + afterglow radiation |
 
 Ensure these are available at the expected paths, or update `Cargo.toml` accordingly.
 
