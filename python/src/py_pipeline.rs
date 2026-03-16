@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 
 use survey_sim::detection::DetectionCriteria;
 
@@ -163,11 +164,74 @@ impl PySimulationPipeline {
                     overall_efficiency: rs.overall_efficiency,
                 })
                 .collect(),
+            detected_sources: result
+                .detected_sources
+                .into_iter()
+                .map(|ds| PyDetectedSource { data: ds })
+                .collect(),
         })
     }
 }
 
 /// Run the pipeline with a borrowed SurveyStore (avoids ownership issues).
+/// Build realistic photometry from a lightcurve evaluation and survey observations.
+///
+/// For each observation where the transient is brighter than the 5-sigma depth,
+/// compute a magnitude error from the SNR and add Gaussian noise.
+fn build_photometry_from_eval(
+    eval: &survey_sim::lightcurve::LightcurveEvaluation,
+    obs: Vec<&survey_sim::survey::SurveyObservation>,
+    inst: &survey_sim::types::TransientInstance,
+) -> Vec<(f64, f64, f64, String)> {
+    let mut photometry = Vec::new();
+    use rand::{Rng, SeedableRng};
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(
+        (inst.t_exp * 1000.0) as u64 ^ (inst.z * 1e6) as u64
+    );
+
+    for (i, observation) in obs.iter().enumerate() {
+        if i >= eval.times_mjd.len() {
+            break;
+        }
+        let band_name = observation.band.0.as_str();
+        let depth = observation.five_sigma_depth;
+
+        // Get model apparent magnitude for this observation
+        let model_mag = match eval.apparent_mags.get(band_name) {
+            Some(mags) if i < mags.len() => mags[i],
+            _ => continue,
+        };
+
+        if !model_mag.is_finite() || model_mag > 90.0 {
+            continue;
+        }
+
+        // SNR = 5 * 10^(0.4 * (depth - mag))
+        let snr = 5.0 * 10f64.powf(0.4 * (depth - model_mag));
+        if snr <= 0.0 {
+            continue;
+        }
+
+        // mag_err = 1.0857 / SNR
+        let mag_err = 1.0857362 / snr;
+
+        // Add Gaussian noise to the true magnitude (Box-Muller)
+        let u1: f64 = rng.random::<f64>().max(1e-10);
+        let u2: f64 = rng.random::<f64>();
+        let gauss: f64 = (-2.0f64 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+        let observed_mag = model_mag + mag_err * gauss;
+
+        // Only include detections (SNR > 1, i.e., within ~5 mag of depth)
+        // Include non-detections too — they're useful as upper limits
+        // But skip if far below depth (would never be in the alert stream)
+        if model_mag < depth + 2.0 {
+            photometry.push((observation.mjd, observed_mag, mag_err, band_name.to_string()));
+        }
+    }
+
+    photometry
+}
+
 fn run_pipeline_borrowed(
     survey: &survey_sim::survey::SurveyStore,
     populations: &[Box<dyn survey_sim::population::PopulationGenerator>],
@@ -187,6 +251,7 @@ fn run_pipeline_borrowed(
     let mut total_simulated = 0usize;
     let mut total_detected = 0usize;
     let mut rate_summaries = Vec::new();
+    let mut all_detected_sources: Vec<DetectedSourceData> = Vec::new();
 
     for pop in populations {
         let instances = pop.generate(n_transients, &mut rng);
@@ -372,7 +437,7 @@ fn run_pipeline_borrowed(
         let actual_z_max = instances.iter().map(|i| i.z).fold(0.0f64, f64::max);
 
         rate_summaries.push(survey_sim::efficiency::rates::RateSummary {
-            transient_type: type_name,
+            transient_type: type_name.clone(),
             volumetric_rate: pop.volumetric_rate(),
             detections_per_year: 0.0, // Simplified for now.
             detections_total: 0.0,
@@ -382,6 +447,54 @@ fn run_pipeline_borrowed(
             recovery: None,
         });
 
+        // Phase 4: Build photometry for detected sources.
+        // For each detected transient, pair model magnitudes with observation
+        // depths to produce realistic (mjd, mag, mag_err, band) tuples.
+        let detected_idx: Vec<usize> = detection_results
+            .iter()
+            .filter(|(_, d)| d.detected)
+            .map(|(idx, _)| *idx)
+            .collect();
+
+        // Build lookup from instance index to evaluation data.
+        let eval_map: HashMap<usize, &(usize, Vec<usize>, survey_sim::lightcurve::LightcurveEvaluation)> =
+            evaluations.iter().map(|e| (e.0, e)).collect();
+        // Also check stacked data if available.
+        let stacked_map: Option<HashMap<usize, &(usize, Vec<survey_sim::survey::SurveyObservation>, survey_sim::lightcurve::LightcurveEvaluation)>> =
+            stacked.as_ref().map(|s| s.iter().map(|e| (e.0, e)).collect());
+
+        for &idx in &detected_idx {
+            let inst = &instances[idx];
+
+            // Get evaluation + observations (prefer stacked if available).
+            let photometry = if let Some(ref sm) = stacked_map {
+                if let Some(&&ref entry) = sm.get(&idx) {
+                    let (_, ref obs_vec, ref eval) = entry;
+                    build_photometry_from_eval(eval, obs_vec.iter().collect(), inst)
+                } else {
+                    continue;
+                }
+            } else if let Some(&&ref entry) = eval_map.get(&idx) {
+                let (_, ref obs_indices, ref eval) = entry;
+                let obs_refs: Vec<&survey_sim::survey::SurveyObservation> =
+                    obs_indices.iter().map(|&oi| survey.get(oi)).collect();
+                build_photometry_from_eval(eval, obs_refs, inst)
+            } else {
+                continue;
+            };
+
+            if !photometry.is_empty() {
+                all_detected_sources.push(DetectedSourceData {
+                    true_params: inst.model_params.clone(),
+                    z: inst.z,
+                    peak_abs_mag: inst.peak_abs_mag,
+                    t_exp: inst.t_exp,
+                    transient_type: type_name.to_string(),
+                    photometry,
+                });
+            }
+        }
+
         total_simulated += n_transients;
         total_detected += n_detected;
     }
@@ -390,6 +503,7 @@ fn run_pipeline_borrowed(
         n_simulated: total_simulated,
         n_detected: total_detected,
         rate_summaries,
+        detected_sources: all_detected_sources,
     }
 }
 
@@ -651,6 +765,81 @@ struct PipelineResult {
     n_simulated: usize,
     n_detected: usize,
     rate_summaries: Vec<survey_sim::efficiency::rates::RateSummary>,
+    detected_sources: Vec<DetectedSourceData>,
+}
+
+/// Per-detected-source photometry and ground truth.
+struct DetectedSourceData {
+    /// True model parameters.
+    true_params: HashMap<String, f64>,
+    /// True redshift.
+    z: f64,
+    /// True peak absolute magnitude.
+    peak_abs_mag: f64,
+    /// True explosion MJD.
+    t_exp: f64,
+    /// Transient type name.
+    transient_type: String,
+    /// Observed photometry: (mjd, apparent_mag, mag_err, band_name).
+    photometry: Vec<(f64, f64, f64, String)>,
+}
+
+/// Python-visible detected source with photometry and truth.
+#[pyclass]
+#[pyo3(name = "DetectedSource")]
+pub struct PyDetectedSource {
+    data: DetectedSourceData,
+}
+
+#[pymethods]
+impl PyDetectedSource {
+    /// True model parameters as a dict.
+    #[getter]
+    fn true_params<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        for (k, v) in &self.data.true_params {
+            d.set_item(k, v)?;
+        }
+        Ok(d)
+    }
+
+    #[getter]
+    fn z(&self) -> f64 { self.data.z }
+
+    #[getter]
+    fn peak_abs_mag(&self) -> f64 { self.data.peak_abs_mag }
+
+    #[getter]
+    fn t_exp(&self) -> f64 { self.data.t_exp }
+
+    #[getter]
+    fn transient_type(&self) -> &str { &self.data.transient_type }
+
+    /// Number of photometric observations.
+    #[getter]
+    fn n_obs(&self) -> usize { self.data.photometry.len() }
+
+    /// Photometry as (times, mags, mag_errs, bands) tuple of lists.
+    fn photometry<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+        let times: Vec<f64> = self.data.photometry.iter().map(|p| p.0).collect();
+        let mags: Vec<f64> = self.data.photometry.iter().map(|p| p.1).collect();
+        let errs: Vec<f64> = self.data.photometry.iter().map(|p| p.2).collect();
+        let bands: Vec<&str> = self.data.photometry.iter().map(|p| p.3.as_str()).collect();
+        Ok((times, mags, errs, bands).into_pyobject(py)?.into())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "DetectedSource(type={}, z={:.3}, n_obs={}, bands={})",
+            self.data.transient_type, self.data.z, self.data.photometry.len(),
+            {
+                let mut bs: Vec<&str> = self.data.photometry.iter().map(|p| p.3.as_str()).collect();
+                bs.sort();
+                bs.dedup();
+                bs.join(",")
+            }
+        )
+    }
 }
 
 /// Python result from the simulation pipeline.
@@ -663,16 +852,52 @@ pub struct PySimulationResult {
     pub n_detected: usize,
     #[pyo3(get)]
     pub rate_summaries: Vec<PyRateSummary>,
+    pub detected_sources: Vec<PyDetectedSource>,
 }
 
 #[pymethods]
 impl PySimulationResult {
+    /// Number of detected sources with photometry.
+    #[getter]
+    fn n_sources(&self) -> usize {
+        self.detected_sources.len()
+    }
+
+    /// Get a detected source by index.
+    fn get_source(&self, index: usize) -> PyResult<PyDetectedSource> {
+        self.detected_sources.get(index)
+            .map(|s| PyDetectedSource { data: DetectedSourceData {
+                true_params: s.data.true_params.clone(),
+                z: s.data.z,
+                peak_abs_mag: s.data.peak_abs_mag,
+                t_exp: s.data.t_exp,
+                transient_type: s.data.transient_type.clone(),
+                photometry: s.data.photometry.clone(),
+            }})
+            .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("source index out of range"))
+    }
+
+    /// Get all detected sources as a list.
+    fn sources(&self) -> Vec<PyDetectedSource> {
+        self.detected_sources.iter().map(|s| PyDetectedSource {
+            data: DetectedSourceData {
+                true_params: s.data.true_params.clone(),
+                z: s.data.z,
+                peak_abs_mag: s.data.peak_abs_mag,
+                t_exp: s.data.t_exp,
+                transient_type: s.data.transient_type.clone(),
+                photometry: s.data.photometry.clone(),
+            }
+        }).collect()
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "SimulationResult(n_simulated={}, n_detected={}, efficiency={:.4})",
+            "SimulationResult(n_simulated={}, n_detected={}, efficiency={:.4}, sources={})",
             self.n_simulated,
             self.n_detected,
             self.n_detected as f64 / self.n_simulated.max(1) as f64,
+            self.detected_sources.len(),
         )
     }
 }
@@ -849,6 +1074,7 @@ pub fn run_too_simulation(
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySimulationPipeline>()?;
     m.add_class::<PySimulationResult>()?;
+    m.add_class::<PyDetectedSource>()?;
     m.add_class::<PyRateSummary>()?;
     m.add_class::<PyTooSimulationResult>()?;
     m.add_function(wrap_pyfunction!(run_too_simulation, m)?)?;

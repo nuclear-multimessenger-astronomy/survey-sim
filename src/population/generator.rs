@@ -417,9 +417,16 @@ impl PopulationGenerator for SupernovaIIPopulation {
             let (ra, dec) = sample_isotropic_sky(rng);
             let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
 
+            // Villar model parameters from superphot+ priors (Kenworthy+ 2024, Table 2).
+            // All log params stored as log10 (converted to ln during model evaluation).
             let mut params = HashMap::new();
-            params.insert("plateau_duration".to_string(), sample_gaussian_clamped(80.0, 20.0, 30.0, 150.0, rng));
-            params.insert("plateau_slope".to_string(), sample_gaussian_clamped(0.01, 0.005, 0.0, 0.05, rng));
+            params.insert("log10_A".to_string(), sample_gaussian_clamped(0.096, 0.058, -0.3, 0.5, rng));
+            params.insert("beta".to_string(), sample_gaussian_clamped(0.008, 0.004, 0.0, 0.03, rng));
+            params.insert("log10_gamma".to_string(), sample_gaussian_clamped(1.43, 0.31, 0.0, 3.5, rng));
+            params.insert("t0".to_string(), sample_gaussian_clamped(0.0, 10.0, -30.0, 30.0, rng));
+            params.insert("log10_tau_rise".to_string(), sample_gaussian_clamped(0.67, 0.43, -2.0, 4.0, rng));
+            params.insert("log10_tau_fall".to_string(), sample_gaussian_clamped(1.53, 0.30, 0.0, 4.0, rng));
+            params.insert("log10_sigma_extra".to_string(), sample_gaussian_clamped(-1.66, 0.34, -3.0, -0.8, rng));
 
             instances.push(TransientInstance {
                 coord: SkyCoord::new(ra, dec),

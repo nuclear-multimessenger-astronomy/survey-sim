@@ -21,6 +21,7 @@ from survey_sim.survey_sim import (
     ParametricModel,
     DetectionCriteria,
     DetectionResult,
+    DetectedSource,
     SimulationPipeline,
     SimulationResult,
     RateSummary,
@@ -67,6 +68,31 @@ def load_ztf_survey(start="201803", end="202603", nside=64):
     SurveyStore
     """
     paths = _ensure_ztf_boom(start=start, end=end)
+    return SurveyStore.from_ztf_boom(paths, nside=nside)
+
+
+def load_ztf_survey_local(data_dir, start="201803", end="202103", nside=64):
+    """Load ZTF boom-pipeline survey from a local directory of HDF5 files.
+
+    Parameters
+    ----------
+    data_dir : str
+        Directory containing ztf_YYYYMM.h5 files.
+    start : str
+        First month (YYYYMM).
+    end : str
+        Last month (YYYYMM, exclusive).
+    nside : int
+        HEALPix NSIDE for spatial indexing.
+    """
+    import glob
+    from pathlib import Path
+    data_dir = Path(data_dir)
+    all_files = sorted(data_dir.glob("ztf_*.h5"))
+    paths = [str(f) for f in all_files
+             if start <= f.stem.split("_")[1] <= end]
+    if not paths:
+        raise FileNotFoundError(f"No ZTF HDF5 files in {data_dir} for range {start}-{end}")
     return SurveyStore.from_ztf_boom(paths, nside=nside)
 
 
@@ -165,6 +191,7 @@ __all__ = [
     "ParametricModel",
     "DetectionCriteria",
     "DetectionResult",
+    "DetectedSource",
     "SimulationPipeline",
     "SimulationResult",
     "RateSummary",

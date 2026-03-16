@@ -243,14 +243,18 @@ fn extract_model_params(instance: &TransientInstance, model: SviModelName) -> Ve
             ]
         }
         SviModelName::Villar => {
-            // Villar params: [A, beta, t0, tfall, trise, c]
+            // Villar params: [log_A, beta, log_gamma, t0, log_tau_rise, log_tau_fall, log_sigma_extra]
+            // All log params are natural log (ln). Population stores log10 values
+            // from superphot+ priors (Kenworthy+ 2024, Table 2); convert to ln here.
+            let ln10 = std::f64::consts::LN_10;
             vec![
-                get("A", 1.0),
-                get("beta", 0.01),
-                get("t0", 0.0),
-                get("tfall", 30.0),
-                get("trise", 5.0),
-                get("c", 0.0),
+                get("log10_A", 0.096) * ln10,           // log₁₀(A) → ln(A)
+                get("beta", 0.008),                       // linear
+                get("log10_gamma", 1.43) * ln10,         // log₁₀(γ) → ln(γ)
+                get("t0", 0.0),                           // days relative to explosion
+                get("log10_tau_rise", 0.67) * ln10,      // log₁₀(τ_rise) → ln(τ_rise)
+                get("log10_tau_fall", 1.53) * ln10,      // log₁₀(τ_fall) → ln(τ_fall)
+                get("log10_sigma_extra", -1.66) * ln10,  // log₁₀(σ_extra) → ln(σ_extra)
             ]
         }
         SviModelName::Tde => {
