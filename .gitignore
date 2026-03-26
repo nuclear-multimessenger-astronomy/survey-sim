@@ -6,12 +6,14 @@ config.yaml
 
 # Data files
 /data/
+scripts/data/
 !python/survey_sim/data/
 *.h5
 *.hdf5
 *.csv
 *.db
 *.parquet
+*.part
 
 # Python
 __pycache__/
