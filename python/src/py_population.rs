@@ -321,17 +321,19 @@ pub struct PyOnAxisGrbPopulation {
     pub(crate) csv_path: String,
     pub(crate) rate: f64,
     pub(crate) z_max: f64,
+    pub(crate) fixed_coord: Option<(f64, f64)>,
 }
 
 #[pymethods]
 impl PyOnAxisGrbPopulation {
     #[new]
-    #[pyo3(signature = (csv_path, rate=1.3, z_max=6.0))]
-    fn new(csv_path: &str, rate: f64, z_max: f64) -> Self {
+    #[pyo3(signature = (csv_path, rate=1.3, z_max=6.0, fixed_coord=None))]
+    fn new(csv_path: &str, rate: f64, z_max: f64, fixed_coord: Option<(f64, f64)>) -> Self {
         Self {
             csv_path: csv_path.to_string(),
             rate,
             z_max,
+            fixed_coord,
         }
     }
 }
@@ -340,13 +342,17 @@ impl PyOnAxisGrbPopulation {
     pub fn to_generator(&self, mjd_min: f64, mjd_max: f64) -> PyResult<OnAxisGrbPopulation> {
         let catalog = GrbCatalog::from_csv(&self.csv_path)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
-        Ok(OnAxisGrbPopulation::new(
+        let mut pop = OnAxisGrbPopulation::new(
             Arc::new(catalog),
             self.rate,
             self.z_max,
             mjd_min,
             mjd_max,
-        ))
+        );
+        if let Some((ra, dec)) = self.fixed_coord {
+            pop = pop.with_fixed_coord(ra, dec);
+        }
+        Ok(pop)
     }
 }
 

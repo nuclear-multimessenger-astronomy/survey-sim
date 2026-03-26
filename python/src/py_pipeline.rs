@@ -24,12 +24,14 @@ pub struct PySimulationPipeline {
     /// Multiple windows produce independent stacked measurements that are all
     /// combined for detection (e.g., [900, 3600] for 15-min + 1-hour stacks).
     stack_windows_s: Option<Vec<f64>>,
+    /// Max rest-frame days after explosion to query for observations (default 100).
+    time_window_days: f64,
 }
 
 #[pymethods]
 impl PySimulationPipeline {
     #[new]
-    #[pyo3(signature = (survey, populations, models, detection, n_transients=100000, seed=42, stack_windows_s=None))]
+    #[pyo3(signature = (survey, populations, models, detection, n_transients=100000, seed=42, stack_windows_s=None, time_window_days=100.0))]
     fn new(
         survey: Py<PySurveyStore>,
         populations: Vec<PyObject>,
@@ -38,6 +40,7 @@ impl PySimulationPipeline {
         n_transients: usize,
         seed: u64,
         stack_windows_s: Option<Vec<f64>>,
+        time_window_days: f64,
     ) -> Self {
         Self {
             survey,
@@ -47,6 +50,7 @@ impl PySimulationPipeline {
             n_transients,
             seed,
             stack_windows_s,
+            time_window_days,
         }
     }
 
@@ -138,6 +142,7 @@ impl PySimulationPipeline {
 
         // Run simulation manually (simplified version that borrows survey).
         let stack_windows_s = self.stack_windows_s.clone();
+        let time_window_days = self.time_window_days;
         let result = py.allow_threads(|| {
             run_pipeline_borrowed(
                 survey,
@@ -147,6 +152,7 @@ impl PySimulationPipeline {
                 self.n_transients,
                 self.seed,
                 stack_windows_s,
+                time_window_days,
             )
         });
 
@@ -240,6 +246,7 @@ fn run_pipeline_borrowed(
     n_transients: usize,
     seed: u64,
     stack_windows_s: Option<Vec<f64>>,
+    time_window_days: f64,
 ) -> PipelineResult {
     use rayon::prelude::*;
     use rand::SeedableRng;
@@ -262,7 +269,7 @@ fn run_pipeline_borrowed(
             None => continue,
         };
 
-        let time_window = 100.0;
+        let time_window = time_window_days;
         let t_phase1 = Instant::now();
 
         // Phase 1: Spatial matching (parallel).

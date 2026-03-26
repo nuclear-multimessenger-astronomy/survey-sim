@@ -492,8 +492,8 @@ impl PyBlastwaveModel {
         times_s: Vec<f64>,
         band: String,
     ) -> PyResult<Vec<f64>> {
+        use blastwave::afterglow::afterglow::Afterglow;
         use blastwave::afterglow::eats::EATS;
-        use blastwave::afterglow::forward_grid::ForwardGrid;
         use blastwave::afterglow::models::{Dict, get_radiation_model};
         use blastwave::constants::{C_SPEED, MASS_P, MPC};
         use blastwave::hydro::sim_box::SimBox;
@@ -545,8 +545,8 @@ impl PyBlastwaveModel {
             return Ok(vec![0.0; times_s.len()]);
         }
 
-        let tmax = valid_times.iter().map(|(_, t)| *t).fold(0.0_f64, f64::max) * 2.0;
-        let tmax = tmax.max(1e5).min(1e8);
+        // The PDE must extend far beyond query times for EATS to work correctly.
+        let tmax = 1e10;
 
         // Build jet config and solve.
         let config = survey_sim::lightcurve::blastwave_model::build_jet_config(
@@ -568,42 +568,45 @@ impl PyBlastwaveModel {
             )
         })?;
 
+        // Configure Afterglow for EATS integration.
+        let mut afterglow = Afterglow::new();
         let mut ag_params = Dict::new();
+        ag_params.insert("theta_v".into(), theta_v);
+        ag_params.insert("d".into(), d_l_mpc);
+        ag_params.insert("z".into(), z);
         ag_params.insert("eps_e".into(), eps_e);
         ag_params.insert("eps_b".into(), eps_b);
         ag_params.insert("p".into(), p);
+        afterglow.config_parameters(ag_params);
+        afterglow.config_intensity(&self.radiation_model);
 
-        let mut rs_ag_params = Dict::new();
-        rs_ag_params.insert("eps_e".into(), eps_e_rs);
-        rs_ag_params.insert("eps_b".into(), eps_b_rs);
-        rs_ag_params.insert("p".into(), p_rs);
+        if rs_data.is_some() {
+            let mut rs_ag_params = Dict::new();
+            rs_ag_params.insert("theta_v".into(), theta_v);
+            rs_ag_params.insert("d".into(), d_l_mpc);
+            rs_ag_params.insert("z".into(), z);
+            rs_ag_params.insert("eps_e".into(), eps_e_rs);
+            rs_ag_params.insert("eps_b".into(), eps_b_rs);
+            rs_ag_params.insert("p".into(), p_rs);
+            afterglow.config_rs_parameters(rs_ag_params);
+        }
 
-        let nu_z = freq * (1.0 + z);
         let flux_factor = (1.0 + z) / (4.0 * std::f64::consts::PI * d_cm * d_cm);
-
-        // Rest-frame times for batch evaluation.
-        let t_rest: Vec<f64> = valid_times.iter().map(|(_, t)| t / (1.0 + z)).collect();
-
-        let fs_grid = ForwardGrid::precompute(
-            nu_z, theta_v, y_data, t_data, theta_data,
-            &eats, tool, &ag_params, radiation_model,
-        );
-        let fs_lum = fs_grid.luminosity_batch(&t_rest);
-
-        let rs_lum = if let Some(rs) = rs_data {
-            let rs_grid = ForwardGrid::precompute_reverse(
-                nu_z, theta_v, y_data, rs, t_data, theta_data,
-                &eats, tool, &rs_ag_params, radiation_model,
-            );
-            rs_grid.luminosity_batch(&t_rest)
-        } else {
-            vec![0.0; t_rest.len()]
-        };
 
         // Build output array.
         let mut flux_mjy = vec![0.0_f64; times_s.len()];
-        for (q_idx, &(orig_idx, _)) in valid_times.iter().enumerate() {
-            let lum = fs_lum[q_idx] + rs_lum[q_idx];
+        for &(orig_idx, t_s) in &valid_times {
+            let lum = if let Some(rs) = rs_data {
+                afterglow.luminosity_total(
+                    t_s, freq, 1e-3, 100, true,
+                    &eats, y_data, rs, t_data, theta_data, tool,
+                )
+            } else {
+                afterglow.luminosity(
+                    t_s, freq, 1e-3, 100, true,
+                    &eats, y_data, t_data, theta_data, tool,
+                )
+            };
             let f_nu = lum * flux_factor;
             flux_mjy[orig_idx] = f_nu / 1e-26;
         }

@@ -32,6 +32,7 @@ impl PyDetectionCriteria {
         min_galactic_lat=0.0,
         spectroscopic_completeness_k=0.0,
         spectroscopic_completeness_m0=19.46,
+        stack_windows_s=None,
     ))]
     fn new(
         min_detections: usize,
@@ -51,6 +52,7 @@ impl PyDetectionCriteria {
         min_galactic_lat: f64,
         spectroscopic_completeness_k: f64,
         spectroscopic_completeness_m0: f64,
+        stack_windows_s: Option<Vec<f64>>,
     ) -> Self {
         Self {
             inner: DetectionCriteria {
@@ -71,6 +73,7 @@ impl PyDetectionCriteria {
                 min_galactic_lat,
                 spectroscopic_completeness_k,
                 spectroscopic_completeness_m0,
+                stack_windows_s: stack_windows_s.unwrap_or_default(),
             },
         }
     }

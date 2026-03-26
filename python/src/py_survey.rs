@@ -114,6 +114,61 @@ impl PySurveyStore {
         Ok(Self { inner: store })
     }
 
+    /// Load Argus observations from a CSV pointing database (redback format).
+    ///
+    /// Expected columns: expMJD, _ra, _dec, filter, fiveSigmaDepth
+    /// This matches the format used by Freeburn et al.'s SimulateAfterglows.py.
+    #[staticmethod]
+    #[pyo3(signature = (csv_path, nside=64))]
+    fn from_argus_csv(csv_path: &str, nside: u32) -> PyResult<Self> {
+        use std::io::BufRead;
+        let file = std::fs::File::open(csv_path)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        let reader = std::io::BufReader::new(file);
+        let mut obs_vec = Vec::new();
+
+        for (i, line) in reader.lines().enumerate() {
+            let line = line.map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+            if i == 0 {
+                continue; // skip header
+            }
+            let fields: Vec<&str> = line.split(',').collect();
+            if fields.len() < 5 {
+                continue;
+            }
+            let mjd: f64 = fields[0].parse().unwrap_or(0.0);
+            let ra: f64 = fields[1].parse().unwrap_or(0.0);
+            let dec: f64 = fields[2].parse().unwrap_or(0.0);
+            let band_str = fields[3].trim();
+            let depth: f64 = fields[4].parse().unwrap_or(0.0);
+
+            // Map redback filter names to survey-sim bands.
+            let band = match band_str {
+                "sdssg" | "desg" | "lsstg" | "ztfg" => "g",
+                "sdssr" | "desr" | "lsstr" | "ztfr" => "r",
+                "sdssi" | "desi" | "lssti" | "ztfi" => "i",
+                other => other,
+            };
+
+            obs_vec.push(survey_sim::survey::SurveyObservation {
+                obs_id: (i - 1) as u64,
+                coord: survey_sim::types::SkyCoord::new(ra, dec),
+                mjd,
+                band: survey_sim::types::Band::new(band),
+                five_sigma_depth: depth,
+                seeing_fwhm: 1.0,
+                exposure_time: 1.0,
+                airmass: 1.0,
+                sky_brightness: 21.0,
+                night: mjd.floor() as i64,
+            });
+        }
+
+        eprintln!("[survey] Loaded {} observations from CSV: {}", obs_vec.len(), csv_path);
+        let store = SurveyStore::new(obs_vec, nside);
+        Ok(Self { inner: store })
+    }
+
     /// Load observations from a Python list of dicts.
     ///
     /// Each dict must have: ra, dec, mjd, band, five_sigma_depth, seeing_fwhm,

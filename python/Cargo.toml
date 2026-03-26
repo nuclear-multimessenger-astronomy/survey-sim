@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 [dependencies]
 survey-sim = { path = ".." }
 lightcurve-fitting = { git = "https://github.com/boom-astro/lightcurve-fitting" }
-blastwave = { git = "https://github.com/nuclear-multimessenger-astronomy/blastwave" }
+blastwave = { path = "/fred/oz480/mcoughli/blastwave" }
 pyo3 = { version = "0.23", features = ["extension-module", "multiple-pymethods"] }
 numpy = "0.23"
 rayon = "1.10"

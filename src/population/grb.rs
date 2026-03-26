@@ -2,12 +2,38 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use rand::Rng;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::types::{Cosmology, SkyCoord, TransientInstance, TransientType};
 
 use super::distributions::{self, sample_explosion_time, sample_isotropic_sky, sample_redshift_volumetric};
 use super::PopulationGenerator;
+
+/// Deserialize Python-style booleans (True/False) as well as standard true/false.
+fn deserialize_python_bool<'de, D>(deserializer: D) -> std::result::Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    match s.as_str() {
+        "True" | "true" | "1" => Ok(true),
+        "False" | "false" | "0" | "" => Ok(false),
+        _ => Err(serde::de::Error::custom(format!("expected bool, got: {}", s))),
+    }
+}
+
+/// Deserialize an f64 that may be empty (empty string → 0.0).
+fn deserialize_optional_f64<'de, D>(deserializer: D) -> std::result::Result<f64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    if s.is_empty() || s == "nan" || s == "inf" {
+        Ok(0.0)
+    } else {
+        s.parse::<f64>().map_err(serde::de::Error::custom)
+    }
+}
 
 /// A single row from the GRB afterglow parameter catalog CSV.
 #[derive(Debug, Clone, Deserialize)]
@@ -15,23 +41,40 @@ struct GrbRow {
     z: f64,
     #[serde(rename = "d_L")]
     d_l_cm: f64,
-    #[serde(rename = "Eiso")]
+    #[serde(rename = "Eiso", deserialize_with = "deserialize_optional_f64")]
     eiso: f64,
-    #[serde(rename = "Gamma_0")]
+    #[serde(rename = "Gamma_0", deserialize_with = "deserialize_optional_f64")]
     gamma_0: f64,
+    #[serde(deserialize_with = "deserialize_optional_f64")]
     thv: f64,
+    #[serde(deserialize_with = "deserialize_optional_f64")]
     logn0: f64,
+    #[serde(deserialize_with = "deserialize_optional_f64")]
     logepse: f64,
-    #[serde(rename = "logepsB")]
+    #[serde(rename = "logepsB", deserialize_with = "deserialize_optional_f64")]
     logepsb: f64,
+    #[serde(deserialize_with = "deserialize_optional_f64")]
     logthc: f64,
+    #[serde(deserialize_with = "deserialize_optional_f64")]
     p: f64,
+    #[serde(deserialize_with = "deserialize_optional_f64")]
     av: f64,
+    #[serde(deserialize_with = "deserialize_optional_f64")]
     p_rvs: f64,
+    #[serde(deserialize_with = "deserialize_optional_f64")]
     logepse_rvs: f64,
-    #[serde(rename = "logepsB_rvs")]
+    #[serde(rename = "logepsB_rvs", deserialize_with = "deserialize_optional_f64")]
     logepsb_rvs: f64,
+    #[serde(deserialize_with = "deserialize_python_bool")]
+    detectable: bool,
+    #[serde(deserialize_with = "deserialize_optional_f64")]
     peak_mag: f64,
+    /// Swift/BAT peak flux (erg/cm²/s, 15-150 keV).
+    #[serde(rename = "Swift_flux", deserialize_with = "deserialize_optional_f64")]
+    swift_flux: f64,
+    /// Fermi/GBM peak flux (erg/cm²/s, 10-1000 keV).
+    #[serde(rename = "Fermi_flux", deserialize_with = "deserialize_optional_f64")]
+    fermi_flux: f64,
 }
 
 /// Shared catalog of pre-drawn GRB parameter sets loaded from CSV.
@@ -146,69 +189,107 @@ impl PopulationGenerator for GrbPopulation {
     }
 }
 
-/// On-axis GRB afterglow population: only catalog rows with θ_v ≤ θ_j.
+/// On-axis GRB afterglow population (Freeburn et al. catalog).
 ///
-/// Uses catalog redshifts and luminosity distances directly (these come from
-/// the gamma-ray-detected GRB redshift distribution). Appropriate for predicting
-/// detection rates of prompt-emission-triggered afterglows.
+/// The catalog CSV contains GRBs already filtered to on-axis viewing
+/// (θ_v ≤ max(θ_γ,j, 1/Γ_0)) per the gamma-ray jet criterion.
+/// All catalog rows are on-axis. The `detectable` flag (peak R_c < 24.5 mag)
+/// pre-filters to only simulate GRBs bright enough for optical detection,
+/// matching Freeburn's methodology.
 pub struct OnAxisGrbPopulation {
     pub catalog: Arc<GrbCatalog>,
-    /// Indices into catalog.rows that are on-axis.
-    on_axis_indices: Vec<usize>,
+    /// Indices into catalog.rows eligible for sampling (detectable=true).
+    eligible_indices: Vec<usize>,
+    /// Total number of on-axis GRBs in catalog (all rows).
+    pub n_total: usize,
+    /// Number of Swift/BAT-detectable GRBs (flux > 1.9e-8 erg/cm²/s).
+    pub n_swift: usize,
+    /// Number of Fermi/GBM-detectable GRBs (flux > 7.5e-8 erg/cm²/s).
+    pub n_fermi: usize,
     pub rate: f64,
     pub z_max: f64,
     pub mjd_min: f64,
     pub mjd_max: f64,
+    /// If set, place all transients at this (RA, Dec) instead of random sky.
+    pub fixed_coord: Option<(f64, f64)>,
 }
 
 impl OnAxisGrbPopulation {
     pub fn new(catalog: Arc<GrbCatalog>, rate: f64, z_max: f64, mjd_min: f64, mjd_max: f64) -> Self {
-        let on_axis_indices: Vec<usize> = catalog
+        let n_total = catalog.rows.len();
+
+        // Count instrument-detectable GRBs (Freeburn Table 2 thresholds).
+        let n_swift = catalog.rows.iter()
+            .filter(|r| r.swift_flux > 1.9e-8)
+            .count();
+        let n_fermi = catalog.rows.iter()
+            .filter(|r| r.fermi_flux > 7.5e-8)
+            .count();
+
+        // Sample from detectable GRBs only (peak R_c < 24.5 mag).
+        let eligible_indices: Vec<usize> = catalog
             .rows
             .iter()
             .enumerate()
-            .filter(|(_, row)| {
-                let theta_j = 10.0_f64.powf(row.logthc);
-                row.thv <= theta_j
-            })
+            .filter(|(_, row)| row.detectable)
             .map(|(i, _)| i)
             .collect();
+
+        eprintln!("[pop] Catalog: {} total on-axis, {} detectable (peak<24.5), {} Swift/BAT, {} Fermi/GBM",
+            n_total, eligible_indices.len(), n_swift, n_fermi);
+
         Self {
             catalog,
-            on_axis_indices,
+            eligible_indices,
+            n_total,
+            n_swift,
+            n_fermi,
             rate,
             z_max,
             mjd_min,
             mjd_max,
+            fixed_coord: None,
         }
     }
 
-    pub fn n_on_axis(&self) -> usize {
-        self.on_axis_indices.len()
+    pub fn with_fixed_coord(mut self, ra: f64, dec: f64) -> Self {
+        self.fixed_coord = Some((ra, dec));
+        self
+    }
+
+    pub fn n_eligible(&self) -> usize {
+        self.eligible_indices.len()
     }
 }
 
 impl PopulationGenerator for OnAxisGrbPopulation {
     fn generate(&self, n: usize, rng: &mut dyn rand::RngCore) -> Vec<TransientInstance> {
-        if self.on_axis_indices.is_empty() {
+        if self.eligible_indices.is_empty() {
             return Vec::new();
         }
-        let n_onaxis = self.on_axis_indices.len();
+        let n_eligible = self.eligible_indices.len();
         let mut instances = Vec::with_capacity(n);
 
         for _ in 0..n {
-            let pick: usize = rng.random_range(0..n_onaxis);
-            let row = &self.catalog.rows[self.on_axis_indices[pick]];
+            let pick: usize = rng.random_range(0..n_eligible);
+            let row = &self.catalog.rows[self.eligible_indices[pick]];
 
             let z = row.z;
             let d_l = row.d_l_cm / MPC_CM;
-            let (ra, dec) = sample_isotropic_sky(rng);
+            let (ra, dec) = if let Some((ra, dec)) = self.fixed_coord {
+                (ra, dec)
+            } else {
+                sample_isotropic_sky(rng)
+            };
             let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
 
             let mut params = HashMap::new();
             params.insert("Eiso".to_string(), row.eiso);
             params.insert("Gamma_0".to_string(), row.gamma_0);
-            params.insert("theta_v".to_string(), row.thv);
+            // Freeburn et al.: afterglow computed with θ_v=0 (on-axis).
+            // The catalog thv is the viewing angle relative to the γ-ray jet,
+            // not the afterglow jet. θ_c (afterglow) is decoupled from θ_γ,j.
+            params.insert("theta_v".to_string(), 0.0);
             params.insert("logthc".to_string(), row.logthc);
             params.insert("logn0".to_string(), row.logn0);
             params.insert("logepse".to_string(), row.logepse);

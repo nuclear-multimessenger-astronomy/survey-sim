@@ -3,6 +3,32 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::lightcurve::LightcurveEvaluation;
+
+/// Depth boost for stacking N Argus 1-sec exposures (read-noise dominated).
+/// Interpolated from Argus website science requirements (g-band, 5σ).
+fn argus_depth_boost(n: usize) -> f64 {
+    if n <= 1 {
+        return 0.0;
+    }
+    const TABLE: [(f64, f64); 5] = [
+        (0.0, 0.0),       // N=1
+        (1.778, 3.2),     // N=60 (1 min)
+        (2.954, 4.7),     // N=900 (15 min)
+        (3.556, 5.5),     // N=3600 (1 hr)
+        (4.459, 6.4),     // N=28800 (1 night)
+    ];
+    let log_n = (n as f64).log10();
+    if log_n >= TABLE[TABLE.len() - 1].0 {
+        return TABLE[TABLE.len() - 1].1;
+    }
+    for i in 1..TABLE.len() {
+        if log_n <= TABLE[i].0 {
+            let frac = (log_n - TABLE[i - 1].0) / (TABLE[i].0 - TABLE[i - 1].0);
+            return TABLE[i - 1].1 + frac * (TABLE[i].1 - TABLE[i - 1].1);
+        }
+    }
+    TABLE[TABLE.len() - 1].1
+}
 use crate::survey::SurveyObservation;
 
 /// Criteria for determining whether a transient is detected.
@@ -57,6 +83,18 @@ pub struct DetectionCriteria {
     pub spectroscopic_completeness_k: f64,
     /// Spectroscopic completeness logistic midpoint magnitude. Default: 19.46.
     pub spectroscopic_completeness_m0: f64,
+    /// Stacking windows (seconds) for flux-averaging detection.
+    ///
+    /// When non-empty, raw observations are grouped into time bins of each
+    /// window size. Within each bin, the model fluxes are averaged and the
+    /// stacked noise is reduced by sqrt(N). A detection counts if the
+    /// stacked flux exceeds the stacked noise threshold. This properly
+    /// handles fast transients (GRB afterglows) whose brightness changes
+    /// within a single stack window.
+    ///
+    /// Example: `vec![900.0, 3600.0, 86400.0]` for 15-min, 1-hr, 1-day.
+    #[serde(default)]
+    pub stack_windows_s: Vec<f64>,
 }
 
 impl Default for DetectionCriteria {
@@ -79,6 +117,7 @@ impl Default for DetectionCriteria {
             min_galactic_lat: 0.0,
             spectroscopic_completeness_k: 0.0,
             spectroscopic_completeness_m0: 19.46,
+            stack_windows_s: Vec::new(),
         }
     }
 }
@@ -109,6 +148,7 @@ impl DetectionCriteria {
             min_galactic_lat: 0.0,
             spectroscopic_completeness_k: 0.0,
             spectroscopic_completeness_m0: 19.46,
+            stack_windows_s: Vec::new(),
         }
     }
 }
@@ -319,6 +359,96 @@ pub fn evaluate_detection(
         0.0
     };
 
+    // ── Flux-stacking detection ──
+    // If stacking windows are specified, group raw observations into time bins,
+    // average the linear fluxes, and detect against the stacked depth.
+    // This properly handles fast transients (GRB afterglows).
+    if !criteria.stack_windows_s.is_empty() {
+        let seconds_per_day = 86400.0;
+
+        for &window_s in &criteria.stack_windows_s {
+            let window_days = window_s / seconds_per_day;
+
+            // Group observations by (band, time_bin).
+            let mut bins: HashMap<(String, i64), Vec<(usize, f64, f64)>> = HashMap::new();
+            for (i, obs) in observations.iter().enumerate() {
+                let band_name = obs.band.0.clone();
+                let time_bin = (obs.mjd / window_days).floor() as i64;
+                if let Some(mags) = evaluation.apparent_mags.get(&band_name) {
+                    if i < mags.len() {
+                        let app_mag = mags[i];
+                        bins.entry((band_name, time_bin))
+                            .or_default()
+                            .push((i, app_mag, obs.five_sigma_depth));
+                    }
+                }
+            }
+
+            for ((band_name, _), entries) in &bins {
+                if entries.is_empty() {
+                    continue;
+                }
+                let n_in_bin = entries.len() as f64;
+
+                // Freeburn stacking: average the linear flux densities within the bin,
+                // then compare against the stacked depth (median + sqrt(N) boost).
+                // This matches Jim's redback fork: flux_density = mean of per-frame fluxes.
+                let total_flux: f64 = entries
+                    .iter()
+                    .map(|&(_, mag, _)| {
+                        if mag < 90.0 {
+                            10.0_f64.powf(-0.4 * (mag - 23.9))
+                        } else {
+                            0.0
+                        }
+                    })
+                    .sum();
+                let mean_flux = total_flux / n_in_bin;
+
+                if mean_flux <= 0.0 {
+                    continue;
+                }
+
+                let stacked_mag = 23.9 - 2.5 * mean_flux.log10();
+
+                // Stacked depth: median single-frame depth + 2.5*log10(sqrt(N))
+                // matching Freeburn's redback fork (line 1137).
+                let mut depths: Vec<f64> = entries.iter().map(|e| e.2).collect();
+                depths.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let median_depth = depths[depths.len() / 2];
+                let n = entries.len();
+                // sqrt(N) scaling matching Freeburn's redback fork.
+                let depth_boost = 2.5 * (n as f64).sqrt().log10();
+                let stacked_depth = median_depth + depth_boost;
+
+                let depth_secondary = stacked_depth + secondary_depth_boost;
+
+                if stacked_mag < depth_secondary {
+                    n_detections += 1;
+                    bands_detected.insert(band_name.clone());
+                    *detections_per_band.entry(band_name.clone()).or_insert(0) += 1;
+
+                    // Use midpoint MJD for the stacked detection.
+                    let mjd_min = entries.iter().map(|e| observations[e.0].mjd).fold(f64::INFINITY, f64::min);
+                    let mjd_max = entries.iter().map(|e| observations[e.0].mjd).fold(f64::NEG_INFINITY, f64::max);
+                    let mjd_mid = 0.5 * (mjd_min + mjd_max);
+                    detection_mjds.push(mjd_mid);
+
+                    if stacked_mag < stacked_depth {
+                        n_detections_primary += 1;
+                    }
+
+                    let mag_err = mag_error_from_depth(stacked_mag, stacked_depth);
+                    band_photometry
+                        .entry(band_name.clone())
+                        .or_default()
+                        .push((mjd_mid, stacked_mag, mag_err));
+                }
+            }
+        }
+    }
+
+    // ── Per-observation (raw/pre-stacked) detection ──
     // Match each observation to the corresponding magnitude.
     for (i, obs) in observations.iter().enumerate() {
         let band_name = &obs.band.0;

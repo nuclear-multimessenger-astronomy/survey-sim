@@ -415,7 +415,6 @@ checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 [[package]]
 name = "blastwave"
 version = "0.1.0"
-source = "git+https://github.com/nuclear-multimessenger-astronomy/blastwave#caf1745eb1feb3db6da9adb2a66a06f0a95a2f06"
 dependencies = [
  "rayon",
 ]
