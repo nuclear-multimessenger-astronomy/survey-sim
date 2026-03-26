@@ -441,8 +441,8 @@ mod tests {
     fn test_grb_catalog_parse_header() {
         // Verify we can at least construct a GrbRow from known field names.
         let csv_data = "\
-z,d_L,Eiso,Gamma_0,thv,logn0,logepse,logepsB,logthc,p,av,p_rvs,logepse_rvs,logepsB_rvs,peak_mag
-1.0,3.09e28,1e52,100.0,0.1,-1.0,-1.0,-2.0,-1.0,2.3,0.1,2.3,-1.0,-2.0,22.0\n";
+z,d_L,Eiso,Gamma_0,thv,logn0,logepse,logepsB,logthc,p,av,p_rvs,logepse_rvs,logepsB_rvs,detectable,peak_mag,Swift_flux,Fermi_flux
+1.0,3.09e28,1e52,100.0,0.1,-1.0,-1.0,-2.0,-1.0,2.3,0.1,2.3,-1.0,-2.0,True,22.0,1e-7,1e-7\n";
         let mut reader = csv::Reader::from_reader(csv_data.as_bytes());
         let row: GrbRow = reader.deserialize().next().unwrap().unwrap();
         assert!((row.z - 1.0).abs() < 1e-10);
@@ -452,9 +452,9 @@ z,d_L,Eiso,Gamma_0,thv,logn0,logepse,logepsB,logthc,p,av,p_rvs,logepse_rvs,logep
     #[test]
     fn test_grb_population_generates() {
         let csv_data = "\
-z,d_L,Eiso,Gamma_0,thv,logn0,logepse,logepsB,logthc,p,av,p_rvs,logepse_rvs,logepsB_rvs,peak_mag
-1.0,3.09e28,1e52,100.0,0.1,-1.0,-1.0,-2.0,-1.0,2.3,0.1,2.3,-1.0,-2.0,22.0
-0.5,1.5e28,1e51,50.0,0.2,-2.0,-1.5,-3.0,-0.8,2.5,0.2,2.5,-1.5,-3.0,24.0\n";
+z,d_L,Eiso,Gamma_0,thv,logn0,logepse,logepsB,logthc,p,av,p_rvs,logepse_rvs,logepsB_rvs,detectable,peak_mag,Swift_flux,Fermi_flux
+1.0,3.09e28,1e52,100.0,0.1,-1.0,-1.0,-2.0,-1.0,2.3,0.1,2.3,-1.0,-2.0,True,22.0,1e-7,1e-7
+0.5,1.5e28,1e51,50.0,0.2,-2.0,-1.5,-3.0,-0.8,2.5,0.2,2.5,-1.5,-3.0,True,24.0,1e-8,1e-8\n";
         let mut reader = csv::Reader::from_reader(csv_data.as_bytes());
         let rows: Vec<GrbRow> = reader.deserialize().map(|r| r.unwrap()).collect();
         let catalog = Arc::new(GrbCatalog { rows });
@@ -477,9 +477,9 @@ z,d_L,Eiso,Gamma_0,thv,logn0,logepse,logepsB,logthc,p,av,p_rvs,logepse_rvs,logep
         // Row 1: on-axis (thv=0.05 < 10^(-1.0)=0.1)
         // Row 2: off-axis (thv=0.3 > 10^(-0.8)=0.158)
         let csv_data = "\
-z,d_L,Eiso,Gamma_0,thv,logn0,logepse,logepsB,logthc,p,av,p_rvs,logepse_rvs,logepsB_rvs,peak_mag
-1.0,3.09e28,1e52,100.0,0.05,-1.0,-1.0,-2.0,-1.0,2.3,0.1,2.3,-1.0,-2.0,22.0
-2.0,6.0e28,1e53,200.0,0.3,-2.0,-1.5,-3.0,-0.8,2.5,0.2,2.5,-1.5,-3.0,24.0\n";
+z,d_L,Eiso,Gamma_0,thv,logn0,logepse,logepsB,logthc,p,av,p_rvs,logepse_rvs,logepsB_rvs,detectable,peak_mag,Swift_flux,Fermi_flux
+1.0,3.09e28,1e52,100.0,0.05,-1.0,-1.0,-2.0,-1.0,2.3,0.1,2.3,-1.0,-2.0,True,22.0,1e-7,1e-7
+2.0,6.0e28,1e53,200.0,0.3,-2.0,-1.5,-3.0,-0.8,2.5,0.2,2.5,-1.5,-3.0,True,24.0,1e-8,1e-8\n";
         let mut reader = csv::Reader::from_reader(csv_data.as_bytes());
         let rows: Vec<GrbRow> = reader.deserialize().map(|r| r.unwrap()).collect();
         Arc::new(GrbCatalog { rows })
@@ -489,16 +489,16 @@ z,d_L,Eiso,Gamma_0,thv,logn0,logepse,logepsB,logthc,p,av,p_rvs,logepse_rvs,logep
     fn test_on_axis_population_filters() {
         let catalog = make_test_catalog();
         let pop = OnAxisGrbPopulation::new(catalog, 1.3, 6.0, 60000.0, 60365.0);
-        // Only row 0 is on-axis.
-        assert_eq!(pop.n_on_axis(), 1);
+        // Both rows have detectable=True, so both are eligible.
+        assert_eq!(pop.n_eligible(), 2);
 
         let mut rng = rand::rngs::SmallRng::seed_from_u64(42);
         let instances = pop.generate(20, &mut rng);
         assert_eq!(instances.len(), 20);
         for inst in &instances {
+            // θ_v should always be 0 (Freeburn convention: on-axis for afterglow).
             let thv = inst.model_params["theta_v"];
-            let thc = 10.0_f64.powf(inst.model_params["logthc"]);
-            assert!(thv <= thc, "on-axis population should only have thv <= thc");
+            assert!((thv - 0.0).abs() < 1e-10, "on-axis population should set thv=0");
         }
     }
 
