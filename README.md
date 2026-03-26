@@ -1,6 +1,6 @@
 # survey-sim
 
-A high-performance survey simulation framework for transient astronomy, written in Rust with Python bindings. Simulates the detection of astrophysical transients (kilonovae, supernovae, TDEs, GRB afterglows) by wide-field time-domain surveys, computing detection efficiencies and volumetric rates.
+A high-performance survey simulation framework for transient astronomy, written in Rust with Python bindings. Simulates the detection of astrophysical transients (kilonovae, supernovae, TDEs, GRB afterglows) by wide-field time-domain surveys, computing detection efficiencies and volumetric rates. Detailed documentation and examples are available [here](https://nuclear-multimessenger-astronomy.github.io/survey-sim).
 
 ## Features
 

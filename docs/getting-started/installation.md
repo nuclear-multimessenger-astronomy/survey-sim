@@ -62,7 +62,13 @@ cargo test -p survey-sim --lib
 
 # Integration tests (requires OpSim database)
 cargo test -p survey-sim --test test_survey -- --ignored
+
 ```
+!!! tip "failing integration test"
+    If the integration test is failing, you may have neglected to create the `config.yaml` file. Run the following and then edit the generated `config.yaml` with the relevant credentials:
+    ```bash
+    cp config.defaults.yaml scripts/config.yaml
+    ```
 
 ## Controlling parallelism
 
