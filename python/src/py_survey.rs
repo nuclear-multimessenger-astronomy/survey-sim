@@ -144,8 +144,8 @@ impl PySurveyStore {
 
             // Map redback filter names to survey-sim bands.
             let band = match band_str {
-                "sdssg" | "desg" | "lsstg" | "ztfg" => "g",
-                "sdssr" | "desr" | "lsstr" | "ztfr" => "r",
+                "sdssg" | "desg" | "lsstg" | "ztfg" | "argus_g" => "g",
+                "sdssr" | "desr" | "lsstr" | "ztfr" | "argus_r" => "r",
                 "sdssi" | "desi" | "lssti" | "ztfi" => "i",
                 other => other,
             };
