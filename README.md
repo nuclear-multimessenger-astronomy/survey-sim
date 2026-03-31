@@ -101,6 +101,16 @@ cargo test -p survey-sim --lib
 cargo test -p survey-sim --test test_survey -- --ignored
 ```
 
+## Data
+
+### Rubin OpSim database
+
+Several examples and tests require the Rubin LSST Operations Simulator (OpSim) baseline cadence database. Download it from the Rubin survey strategy archive:
+
+```bash
+curl -O https://s3df.slac.stanford.edu/data/rubin/sim-data/sims_featureScheduler_runs5.1/baseline/baseline_v5.1.1_10yrs.db
+```
+
 ## Quick Start
 
 ### Python API
@@ -114,7 +124,7 @@ from survey_sim import (
     SimulationPipeline,
 )
 
-# Load survey observations
+# Load survey observations (see Data section above for download)
 survey = SurveyStore.from_rubin("/path/to/baseline_v5.1.1_10yrs.db")
 
 # Define population and lightcurve model

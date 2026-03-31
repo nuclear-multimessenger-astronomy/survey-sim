@@ -169,6 +169,59 @@ impl PySurveyStore {
         Ok(Self { inner: store })
     }
 
+    /// Load observations from numpy arrays (fast, low memory).
+    ///
+    /// Accepts column arrays: mjd, ra, dec, depth, and a list of band strings.
+    /// This is the fastest way to load large pointing databases from Python.
+    #[staticmethod]
+    #[pyo3(signature = (mjd, ra, dec, depth, bands, nside=64))]
+    fn from_arrays(
+        mjd: numpy::PyReadonlyArray1<f64>,
+        ra: numpy::PyReadonlyArray1<f64>,
+        dec: numpy::PyReadonlyArray1<f64>,
+        depth: numpy::PyReadonlyArray1<f64>,
+        bands: Vec<String>,
+        nside: u32,
+    ) -> PyResult<Self> {
+        let mjd_arr = mjd.as_array();
+        let ra_arr = ra.as_array();
+        let dec_arr = dec.as_array();
+        let depth_arr = depth.as_array();
+        let n = mjd_arr.len();
+        if ra_arr.len() != n || dec_arr.len() != n || depth_arr.len() != n || bands.len() != n {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "All arrays must have the same length",
+            ));
+        }
+
+        let mut obs_vec = Vec::with_capacity(n);
+        for i in 0..n {
+            let band_str = bands[i].as_str();
+            let band = match band_str {
+                "sdssg" | "desg" | "lsstg" | "ztfg" | "argus_g" | "g" => "g",
+                "sdssr" | "desr" | "lsstr" | "ztfr" | "argus_r" | "r" => "r",
+                "sdssi" | "desi" | "lssti" | "ztfi" | "i" => "i",
+                other => other,
+            };
+            obs_vec.push(survey_sim::survey::SurveyObservation {
+                obs_id: i as u64,
+                coord: survey_sim::types::SkyCoord::new(ra_arr[i], dec_arr[i]),
+                mjd: mjd_arr[i],
+                band: survey_sim::types::Band::new(band),
+                five_sigma_depth: depth_arr[i],
+                seeing_fwhm: 1.0,
+                exposure_time: 1.0,
+                airmass: 1.0,
+                sky_brightness: 21.0,
+                night: mjd_arr[i].floor() as i64,
+            });
+        }
+
+        eprintln!("[survey] Loaded {} observations from arrays", obs_vec.len());
+        let store = SurveyStore::new(obs_vec, nside);
+        Ok(Self { inner: store })
+    }
+
     /// Load observations from a Python list of dicts.
     ///
     /// Each dict must have: ra, dec, mjd, band, five_sigma_depth, seeing_fwhm,

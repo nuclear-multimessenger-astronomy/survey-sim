@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
-use crate::detection::{evaluate_detection, DetectionCriteria, DetectionResult};
+use crate::detection::{evaluate_detection, evaluate_detection_with_t0, DetectionCriteria, DetectionResult};
 use crate::efficiency::rates::{compute_rate, estimate_survey_omega, recover_rate, RateSummary};
 use crate::efficiency::{EfficiencyGrid, GridAxis};
 use crate::lightcurve::{LightcurveEvaluation, LightcurveModel};
@@ -240,7 +240,8 @@ impl SimulationPipeline {
                         .iter()
                         .map(|&oi| self.survey.get(oi))
                         .collect();
-                    let result = evaluate_detection(eval, &obs_refs, criteria);
+                    let t_exp = instances[*inst_idx].t_exp;
+                    let result = evaluate_detection_with_t0(eval, &obs_refs, criteria, Some(t_exp));
                     (*inst_idx, result)
                 })
                 .collect();

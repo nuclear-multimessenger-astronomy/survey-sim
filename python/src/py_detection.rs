@@ -32,6 +32,8 @@ impl PyDetectionCriteria {
         min_galactic_lat=0.0,
         spectroscopic_completeness_k=0.0,
         spectroscopic_completeness_m0=19.46,
+        early_detection_fast_days=0.0,
+        rate_dedup_window_days=None,
         stack_windows_s=None,
     ))]
     fn new(
@@ -52,6 +54,8 @@ impl PyDetectionCriteria {
         min_galactic_lat: f64,
         spectroscopic_completeness_k: f64,
         spectroscopic_completeness_m0: f64,
+        early_detection_fast_days: f64,
+        rate_dedup_window_days: Option<f64>,
         stack_windows_s: Option<Vec<f64>>,
     ) -> Self {
         Self {
@@ -73,6 +77,8 @@ impl PyDetectionCriteria {
                 min_galactic_lat,
                 spectroscopic_completeness_k,
                 spectroscopic_completeness_m0,
+                early_detection_fast_days,
+                rate_dedup_window_days: rate_dedup_window_days.unwrap_or(2.0 / 24.0),
                 stack_windows_s: stack_windows_s.unwrap_or_default(),
             },
         }

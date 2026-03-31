@@ -83,6 +83,19 @@ pub struct DetectionCriteria {
     pub spectroscopic_completeness_k: f64,
     /// Spectroscopic completeness logistic midpoint magnitude. Default: 19.46.
     pub spectroscopic_completeness_m0: f64,
+    /// If the first detection occurs within this many days of the transient
+    /// explosion time, automatically pass the fast-transient criterion.
+    /// This accounts for models (e.g. Bu2026) that don't cover early times:
+    /// a source that appears from nothing is intrinsically fast.
+    /// Default: 0.0 (disabled). Set to e.g. 0.25 for Bu2026 (model starts at 0.2d).
+    /// Requires that the pipeline passes explosion_mjd context to the detection.
+    pub early_detection_fast_days: f64,
+    /// Window in days for deduplicating same-epoch observations before computing
+    /// rise/fade rates. Observations within this window in the same band are
+    /// collapsed to the brightest. Default: 0.5 days (nightly dedup, appropriate
+    /// for ZTF/Rubin). Set to 0.0 to disable dedup (appropriate for Argus, which
+    /// has meaningful intra-night evolution at 15-min cadence).
+    pub rate_dedup_window_days: f64,
     /// Stacking windows (seconds) for flux-averaging detection.
     ///
     /// When non-empty, raw observations are grouped into time bins of each
@@ -117,6 +130,8 @@ impl Default for DetectionCriteria {
             min_galactic_lat: 0.0,
             spectroscopic_completeness_k: 0.0,
             spectroscopic_completeness_m0: 19.46,
+            early_detection_fast_days: 0.0,
+            rate_dedup_window_days: 2.0 / 24.0,
             stack_windows_s: Vec::new(),
         }
     }
@@ -148,6 +163,8 @@ impl DetectionCriteria {
             min_galactic_lat: 0.0,
             spectroscopic_completeness_k: 0.0,
             spectroscopic_completeness_m0: 19.46,
+            early_detection_fast_days: 0.0,
+            rate_dedup_window_days: 2.0 / 24.0,
             stack_windows_s: Vec::new(),
         }
     }
@@ -338,6 +355,17 @@ pub fn evaluate_detection(
     evaluation: &LightcurveEvaluation,
     observations: &[&SurveyObservation],
     criteria: &DetectionCriteria,
+) -> DetectionResult {
+    evaluate_detection_with_t0(evaluation, observations, criteria, None)
+}
+
+/// Like evaluate_detection but accepts an optional explosion MJD for
+/// early-detection fast-transient override.
+pub fn evaluate_detection_with_t0(
+    evaluation: &LightcurveEvaluation,
+    observations: &[&SurveyObservation],
+    criteria: &DetectionCriteria,
+    explosion_mjd: Option<f64>,
 ) -> DetectionResult {
     let mut n_detections = 0usize;
     let mut n_detections_primary = 0usize;
@@ -554,21 +582,49 @@ pub fn evaluate_detection(
     for (_band, mut phot) in band_photometry {
         // Sort by time.
         phot.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-        // Deduplicate same-night observations (within 0.5 days), keeping the
-        // brightest. Multiple overlapping pointings from the same visit cover
-        // the same position but are separate observations in the index.
-        phot.dedup_by(|a, b| {
-            if (a.0 - b.0).abs() < 0.5 {
-                // Keep the brighter (lower mag) observation in b.
-                if a.1 < b.1 {
-                    b.1 = a.1;
-                    b.2 = a.2;
+
+        // Bin nearby observations (within rate_dedup_window_days), averaging
+        // fluxes within each bin. Set to 0.0 to disable (e.g. for Argus
+        // intra-night rates). Uses sequential binning: a new bin starts when
+        // the gap to the bin start exceeds the window.
+        let dedup_window = criteria.rate_dedup_window_days;
+        if dedup_window > 0.0 && phot.len() > 1 {
+            let mut binned: Vec<(f64, f64, f64)> = Vec::new();
+            let mut bin_start = phot[0].0;
+            let mut bin_times = vec![phot[0].0];
+            let mut bin_fluxes = vec![10.0_f64.powf(-0.4 * phot[0].1)];
+            let mut bin_errs = vec![phot[0].2];
+
+            for p in phot.iter().skip(1) {
+                if p.0 - bin_start < dedup_window {
+                    bin_times.push(p.0);
+                    bin_fluxes.push(10.0_f64.powf(-0.4 * p.1));
+                    bin_errs.push(p.2);
+                } else {
+                    // Finalise previous bin: mean time, mean flux → mag, mean error / sqrt(N)
+                    let n = bin_fluxes.len() as f64;
+                    let mean_t: f64 = bin_times.iter().sum::<f64>() / n;
+                    let mean_flux: f64 = bin_fluxes.iter().sum::<f64>() / n;
+                    let mean_mag = -2.5 * mean_flux.log10();
+                    let mean_err: f64 = (bin_errs.iter().map(|e| e * e).sum::<f64>() / n).sqrt() / n.sqrt();
+                    binned.push((mean_t, mean_mag, mean_err));
+                    // Start new bin
+                    bin_start = p.0;
+                    bin_times = vec![p.0];
+                    bin_fluxes = vec![10.0_f64.powf(-0.4 * p.1)];
+                    bin_errs = vec![p.2];
                 }
-                true
-            } else {
-                false
             }
-        });
+            // Finalise last bin
+            let n = bin_fluxes.len() as f64;
+            let mean_t: f64 = bin_times.iter().sum::<f64>() / n;
+            let mean_flux: f64 = bin_fluxes.iter().sum::<f64>() / n;
+            let mean_mag = -2.5 * mean_flux.log10();
+            let mean_err: f64 = (bin_errs.iter().map(|e| e * e).sum::<f64>() / n).sqrt() / n.sqrt();
+            binned.push((mean_t, mean_mag, mean_err));
+
+            phot = binned;
+        }
 
         if phot.len() < 2 {
             continue;
@@ -606,7 +662,20 @@ pub fn evaluate_detection(
         let fading_fast = best_fade_rate
             .map(|r| r >= criteria.min_fade_rate)
             .unwrap_or(false);
-        rising_fast || fading_fast
+        // Early-detection override: if any detection is within early_detection_fast_days
+        // of the explosion, the source appeared from nothing and is inherently fast.
+        let early_fast = if criteria.early_detection_fast_days > 0.0 {
+            if let Some(t_exp) = explosion_mjd {
+                first_detection_mjd
+                    .map(|t| (t - t_exp) < criteria.early_detection_fast_days)
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        rising_fast || fading_fast || early_fast
     };
 
     // Check timespan constraint.

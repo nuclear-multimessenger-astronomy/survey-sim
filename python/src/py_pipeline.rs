@@ -184,12 +184,14 @@ impl PySimulationPipeline {
 ///
 /// For each observation where the transient is brighter than the 5-sigma depth,
 /// compute a magnitude error from the SNR and add Gaussian noise.
+/// Build detection photometry and non-detection upper limits from a lightcurve evaluation.
 fn build_photometry_from_eval(
     eval: &survey_sim::lightcurve::LightcurveEvaluation,
     obs: Vec<&survey_sim::survey::SurveyObservation>,
     inst: &survey_sim::types::TransientInstance,
-) -> Vec<(f64, f64, f64, String)> {
+) -> (Vec<(f64, f64, f64, String)>, Vec<(f64, f64, String)>) {
     let mut photometry = Vec::new();
+    let mut non_detections = Vec::new();
     use rand::{Rng, SeedableRng};
     let mut rng = rand::rngs::SmallRng::seed_from_u64(
         (inst.t_exp * 1000.0) as u64 ^ (inst.z * 1e6) as u64
@@ -202,6 +204,12 @@ fn build_photometry_from_eval(
         let band_name = observation.band.0.as_str();
         let depth = observation.five_sigma_depth;
 
+        // Pre-explosion observations are always non-detections
+        if observation.mjd < inst.t_exp {
+            non_detections.push((observation.mjd, depth, band_name.to_string()));
+            continue;
+        }
+
         // Get model apparent magnitude for this observation
         let model_mag = match eval.apparent_mags.get(band_name) {
             Some(mags) if i < mags.len() => mags[i],
@@ -209,33 +217,29 @@ fn build_photometry_from_eval(
         };
 
         if !model_mag.is_finite() || model_mag > 90.0 {
+            // No valid model prediction — record as non-detection
+            non_detections.push((observation.mjd, depth, band_name.to_string()));
             continue;
         }
 
         // SNR = 5 * 10^(0.4 * (depth - mag))
         let snr = 5.0 * 10f64.powf(0.4 * (depth - model_mag));
-        if snr <= 0.0 {
-            continue;
-        }
 
-        // mag_err = 1.0857 / SNR
-        let mag_err = 1.0857362 / snr;
-
-        // Add Gaussian noise to the true magnitude (Box-Muller)
-        let u1: f64 = rng.random::<f64>().max(1e-10);
-        let u2: f64 = rng.random::<f64>();
-        let gauss: f64 = (-2.0f64 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
-        let observed_mag = model_mag + mag_err * gauss;
-
-        // Only include detections (SNR > 1, i.e., within ~5 mag of depth)
-        // Include non-detections too — they're useful as upper limits
-        // But skip if far below depth (would never be in the alert stream)
-        if model_mag < depth + 2.0 {
+        if snr >= 5.0 {
+            // Detection: add noise and record
+            let mag_err = 1.0857362 / snr;
+            let u1: f64 = rng.random::<f64>().max(1e-10);
+            let u2: f64 = rng.random::<f64>();
+            let gauss: f64 = (-2.0f64 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+            let observed_mag = model_mag + mag_err * gauss;
             photometry.push((observation.mjd, observed_mag, mag_err, band_name.to_string()));
+        } else {
+            // Non-detection: record the depth as upper limit
+            non_detections.push((observation.mjd, depth, band_name.to_string()));
         }
     }
 
-    photometry
+    (photometry, non_detections)
 }
 
 fn run_pipeline_borrowed(
@@ -277,7 +281,8 @@ fn run_pipeline_borrowed(
             .par_iter()
             .enumerate()
             .map(|(i, inst)| {
-                let mjd_min = inst.t_exp;
+                // Look back 30 days before explosion for non-detection upper limits
+                let mjd_min = inst.t_exp - 30.0;
                 let mjd_max = inst.t_exp + time_window * (1.0 + inst.z);
                 let obs_indices = survey.query(&inst.coord, mjd_min, mjd_max);
                 (i, obs_indices)
@@ -474,7 +479,7 @@ fn run_pipeline_borrowed(
             let inst = &instances[idx];
 
             // Get evaluation + observations (prefer stacked if available).
-            let photometry = if let Some(ref sm) = stacked_map {
+            let (photometry, non_detections) = if let Some(ref sm) = stacked_map {
                 if let Some(&&ref entry) = sm.get(&idx) {
                     let (_, ref obs_vec, ref eval) = entry;
                     build_photometry_from_eval(eval, obs_vec.iter().collect(), inst)
@@ -498,6 +503,7 @@ fn run_pipeline_borrowed(
                     t_exp: inst.t_exp,
                     transient_type: type_name.to_string(),
                     photometry,
+                    non_detections,
                 });
             }
         }
@@ -789,6 +795,8 @@ struct DetectedSourceData {
     transient_type: String,
     /// Observed photometry: (mjd, apparent_mag, mag_err, band_name).
     photometry: Vec<(f64, f64, f64, String)>,
+    /// Non-detections (upper limits): (mjd, depth_mag, band_name).
+    non_detections: Vec<(f64, f64, String)>,
 }
 
 /// Python-visible detected source with photometry and truth.
@@ -835,6 +843,18 @@ impl PyDetectedSource {
         Ok((times, mags, errs, bands).into_pyobject(py)?.into())
     }
 
+    /// Non-detections (upper limits) as (times, depths, bands) tuple of lists.
+    fn non_detections<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+        let times: Vec<f64> = self.data.non_detections.iter().map(|p| p.0).collect();
+        let depths: Vec<f64> = self.data.non_detections.iter().map(|p| p.1).collect();
+        let bands: Vec<&str> = self.data.non_detections.iter().map(|p| p.2.as_str()).collect();
+        Ok((times, depths, bands).into_pyobject(py)?.into())
+    }
+
+    /// Number of non-detection upper limits.
+    #[getter]
+    fn n_non_detections(&self) -> usize { self.data.non_detections.len() }
+
     fn __repr__(&self) -> String {
         format!(
             "DetectedSource(type={}, z={:.3}, n_obs={}, bands={})",
@@ -880,6 +900,7 @@ impl PySimulationResult {
                 t_exp: s.data.t_exp,
                 transient_type: s.data.transient_type.clone(),
                 photometry: s.data.photometry.clone(),
+                non_detections: s.data.non_detections.clone(),
             }})
             .ok_or_else(|| pyo3::exceptions::PyIndexError::new_err("source index out of range"))
     }
@@ -894,6 +915,7 @@ impl PySimulationResult {
                 t_exp: s.data.t_exp,
                 transient_type: s.data.transient_type.clone(),
                 photometry: s.data.photometry.clone(),
+                non_detections: s.data.non_detections.clone(),
             }
         }).collect()
     }
