@@ -197,12 +197,23 @@ fn build_photometry_from_eval(
         (inst.t_exp * 1000.0) as u64 ^ (inst.z * 1e6) as u64
     );
 
-    for (i, observation) in obs.iter().enumerate() {
-        if i >= eval.times_mjd.len() {
-            break;
-        }
+    // Per-band counter: apparent_mags[band] is pushed in obs-order per band,
+    // so we need a counter per band to index the correct mag.
+    let mut band_counts: HashMap<String, usize> = HashMap::new();
+
+    for observation in obs.iter() {
         let band_name = observation.band.0.as_str();
         let depth = observation.five_sigma_depth;
+
+        // Increment per-band counter for EVERY observation (pre and post),
+        // since apparent_mags[band] contains one entry per obs in obs-index
+        // order (with mag=99 for pre-explosion).
+        let count_val = {
+            let count = band_counts.entry(band_name.to_string()).or_insert(0);
+            let v = *count;
+            *count += 1;
+            v
+        };
 
         // Pre-explosion observations are always non-detections
         if observation.mjd < inst.t_exp {
@@ -210,10 +221,14 @@ fn build_photometry_from_eval(
             continue;
         }
 
-        // Get model apparent magnitude for this observation
+        // Get model apparent magnitude for this observation (per-band indexing).
         let model_mag = match eval.apparent_mags.get(band_name) {
-            Some(mags) if i < mags.len() => mags[i],
-            _ => continue,
+            Some(mags) if count_val < mags.len() => mags[count_val],
+            _ => {
+                // No mag available for this band — record as non-detection
+                non_detections.push((observation.mjd, depth, band_name.to_string()));
+                continue;
+            }
         };
 
         if !model_mag.is_finite() || model_mag > 90.0 {
