@@ -4,6 +4,11 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use survey_sim::detection::DetectionCriteria;
+use survey_sim::efficiency::{
+    rates::{compute_rate, estimate_survey_omega},
+    EfficiencyGrid, GridAxis,
+};
+use survey_sim::types::Cosmology;
 
 use crate::py_detection::PyDetectionCriteria;
 use crate::py_lightcurve::{PyBlastwaveModel, PyMetzgerKNModel, PyParametricModel, PythonCallbackModel};
@@ -156,18 +161,30 @@ impl PySimulationPipeline {
             )
         });
 
+        let survey_duration_years = survey_ref.inner.duration_years;
+        let per_type_counts = result.per_type_counts.clone();
         Ok(PySimulationResult {
             n_simulated: result.n_simulated,
             n_detected: result.n_detected,
             rate_summaries: result
                 .rate_summaries
                 .iter()
-                .map(|rs| PyRateSummary {
-                    transient_type: rs.transient_type.clone(),
-                    volumetric_rate: rs.volumetric_rate,
-                    detections_per_year: rs.detections_per_year,
-                    detections_total: rs.detections_total,
-                    overall_efficiency: rs.overall_efficiency,
+                .enumerate()
+                .map(|(i, rs)| {
+                    let (n_sim, n_det) =
+                        per_type_counts.get(i).copied().unwrap_or((0, 0));
+                    PyRateSummary {
+                        transient_type: rs.transient_type.clone(),
+                        volumetric_rate: rs.volumetric_rate,
+                        detections_per_year: rs.detections_per_year,
+                        detections_total: rs.detections_total,
+                        overall_efficiency: rs.overall_efficiency,
+                        n_simulated: n_sim,
+                        n_detected: n_det,
+                        z_max: rs.z_max,
+                        survey_omega_sr: rs.survey_omega_sr,
+                        survey_duration_years,
+                    }
                 })
                 .collect(),
             detected_sources: result
@@ -277,6 +294,7 @@ fn run_pipeline_borrowed(
     let mut total_simulated = 0usize;
     let mut total_detected = 0usize;
     let mut rate_summaries = Vec::new();
+    let mut per_type_counts: Vec<(usize, usize)> = Vec::new();
     let mut all_detected_sources: Vec<DetectedSourceData> = Vec::new();
 
     for pop in populations {
@@ -463,16 +481,48 @@ fn run_pipeline_borrowed(
 
         let actual_z_max = instances.iter().map(|i| i.z).fold(0.0f64, f64::max);
 
+        // Build a 1-D z efficiency grid, recording every generated instance
+        // (matched-and-detected, matched-and-not-detected, unmatched-as-not-detected,
+        // and instances that failed lightcurve eval as not-detected).
+        const N_Z_BINS: usize = 20;
+        let z_axis_max = (actual_z_max * 1.1).max(1e-6);
+        let mut grid = EfficiencyGrid::new(vec![GridAxis::uniform(
+            "z", 0.0, z_axis_max, N_Z_BINS,
+        )]);
+        let det_map: HashMap<usize, bool> = detection_results
+            .iter()
+            .map(|(idx, d)| (*idx, d.detected))
+            .collect();
+        for (i, inst) in instances.iter().enumerate() {
+            let mut vals = HashMap::new();
+            vals.insert("z".to_string(), inst.z);
+            let detected = det_map.get(&i).copied().unwrap_or(false);
+            grid.record(&vals, detected);
+        }
+
+        // Convert efficiency × volumetric_rate × omega → detections/yr.
+        // Population is sampled isotropically over the full sky, so eff(z) already
+        // folds in the survey footprint fraction — use 4π here (mirrors
+        // src/pipeline/mod.rs:281).
+        let eff_vs_z = grid.marginalize_over("z").unwrap_or_default();
+        let cosmo = Cosmology::default();
+        let survey_omega_sr = estimate_survey_omega(survey.n_pixels(), survey.nside());
+        let omega_full_sky = 4.0 * std::f64::consts::PI;
+        let detections_per_year =
+            compute_rate(&eff_vs_z, pop.volumetric_rate(), omega_full_sky, &cosmo);
+        let detections_total = detections_per_year * survey.duration_years;
+
         rate_summaries.push(survey_sim::efficiency::rates::RateSummary {
             transient_type: type_name.clone(),
             volumetric_rate: pop.volumetric_rate(),
-            detections_per_year: 0.0, // Simplified for now.
-            detections_total: 0.0,
+            detections_per_year,
+            detections_total,
             overall_efficiency: overall_eff,
-            survey_omega_sr: 0.0,
+            survey_omega_sr,
             z_max: actual_z_max,
             recovery: None,
         });
+        per_type_counts.push((n_transients, n_detected));
 
         // Phase 4: Build photometry for detected sources.
         // For each detected transient, pair model magnitudes with observation
@@ -531,6 +581,7 @@ fn run_pipeline_borrowed(
         n_simulated: total_simulated,
         n_detected: total_detected,
         rate_summaries,
+        per_type_counts,
         detected_sources: all_detected_sources,
     }
 }
@@ -793,6 +844,8 @@ struct PipelineResult {
     n_simulated: usize,
     n_detected: usize,
     rate_summaries: Vec<survey_sim::efficiency::rates::RateSummary>,
+    /// Parallel to `rate_summaries`: per-population (n_simulated, n_detected).
+    per_type_counts: Vec<(usize, usize)>,
     detected_sources: Vec<DetectedSourceData>,
 }
 
@@ -944,6 +997,33 @@ impl PySimulationResult {
             self.detected_sources.len(),
         )
     }
+
+    /// Multi-line summary used by `print(result)`.
+    fn __str__(&self) -> String {
+        let mut s = format!(
+            "SimulationResult\n  n_simulated: {}\n  n_detected:  {}\n  efficiency:  {:.4}\n  sources:     {}\n",
+            self.n_simulated,
+            self.n_detected,
+            self.n_detected as f64 / self.n_simulated.max(1) as f64,
+            self.detected_sources.len(),
+        );
+        if !self.rate_summaries.is_empty() {
+            s.push_str("  rate_summaries:\n");
+            for rs in &self.rate_summaries {
+                s.push_str(&format!(
+                    "    {} : rate={:.3e} Gpc^-3/yr, eff={:.4}, det/yr={:.3e}, det_total={:.3e} (T={:.2} yr, omega={:.3e} sr)\n",
+                    rs.transient_type,
+                    rs.volumetric_rate,
+                    rs.overall_efficiency,
+                    rs.detections_per_year,
+                    rs.detections_total,
+                    rs.survey_duration_years,
+                    rs.survey_omega_sr,
+                ));
+            }
+        }
+        s
+    }
 }
 
 /// Python rate summary.
@@ -951,27 +1031,56 @@ impl PySimulationResult {
 #[pyo3(name = "RateSummary")]
 #[derive(Clone)]
 pub struct PyRateSummary {
+    /// Transient type name (e.g. "Kilonova", "SNIa", "Afterglow").
     #[pyo3(get)]
     pub transient_type: String,
+    /// Assumed volumetric rate in Gpc^-3 yr^-1 (echoes the input rate).
     #[pyo3(get)]
     pub volumetric_rate: f64,
+    /// Expected detections per year:
+    ///     R_vol × 4π × ∫ eff(z) × dV/dz / (1+z) dz
     #[pyo3(get)]
     pub detections_per_year: f64,
+    /// `detections_per_year × survey_duration_years`.
     #[pyo3(get)]
     pub detections_total: f64,
+    /// Fraction of simulated transients that were detected (`n_detected / n_simulated`).
     #[pyo3(get)]
     pub overall_efficiency: f64,
+    /// Number of MC transients simulated for this population.
+    #[pyo3(get)]
+    pub n_simulated: usize,
+    /// Number of MC transients detected for this population.
+    #[pyo3(get)]
+    pub n_detected: usize,
+    /// Maximum redshift drawn for this population.
+    #[pyo3(get)]
+    pub z_max: f64,
+    /// Survey solid angle in steradians (from the HEALPix-pixel footprint).
+    #[pyo3(get)]
+    pub survey_omega_sr: f64,
+    /// Survey duration in years (mjd_max - mjd_min) / 365.25.
+    #[pyo3(get)]
+    pub survey_duration_years: f64,
 }
 
 #[pymethods]
 impl PyRateSummary {
     fn __repr__(&self) -> String {
         format!(
-            "RateSummary(type={}, rate={:.1} Gpc^-3/yr, eff={:.4}, det/yr={:.1})",
+            "RateSummary(type={}, rate={:.3e} Gpc^-3/yr, n_sim={}, n_det={}, \
+             eff={:.4}, det/yr={:.3e}, det_total={:.3e}, \
+             z_max={:.2}, omega_sr={:.3e}, T={:.2} yr)",
             self.transient_type,
             self.volumetric_rate,
+            self.n_simulated,
+            self.n_detected,
             self.overall_efficiency,
             self.detections_per_year,
+            self.detections_total,
+            self.z_max,
+            self.survey_omega_sr,
+            self.survey_duration_years,
         )
     }
 }
