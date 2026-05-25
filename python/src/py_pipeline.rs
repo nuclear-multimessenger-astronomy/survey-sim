@@ -162,7 +162,7 @@ impl PySimulationPipeline {
         });
 
         let survey_duration_years = survey_ref.inner.duration_years;
-        let per_type_counts = result.per_type_counts.clone();
+        let per_type_extras = result.per_type_extras.clone();
         Ok(PySimulationResult {
             n_simulated: result.n_simulated,
             n_detected: result.n_detected,
@@ -171,8 +171,10 @@ impl PySimulationPipeline {
                 .iter()
                 .enumerate()
                 .map(|(i, rs)| {
-                    let (n_sim, n_det) =
-                        per_type_counts.get(i).copied().unwrap_or((0, 0));
+                    let (n_sim, n_det, eff_vt) = per_type_extras
+                        .get(i)
+                        .copied()
+                        .unwrap_or((0, 0, 0.0));
                     PyRateSummary {
                         transient_type: rs.transient_type.clone(),
                         volumetric_rate: rs.volumetric_rate,
@@ -184,6 +186,7 @@ impl PySimulationPipeline {
                         z_max: rs.z_max,
                         survey_omega_sr: rs.survey_omega_sr,
                         survey_duration_years,
+                        effective_vt_gpc3_yr: eff_vt,
                     }
                 })
                 .collect(),
@@ -294,7 +297,8 @@ fn run_pipeline_borrowed(
     let mut total_simulated = 0usize;
     let mut total_detected = 0usize;
     let mut rate_summaries = Vec::new();
-    let mut per_type_counts: Vec<(usize, usize)> = Vec::new();
+    // Parallel to `rate_summaries`: (n_simulated, n_detected, effective_vt_gpc3_yr).
+    let mut per_type_extras: Vec<(usize, usize, f64)> = Vec::new();
     let mut all_detected_sources: Vec<DetectedSourceData> = Vec::new();
 
     for pop in populations {
@@ -511,6 +515,10 @@ fn run_pipeline_borrowed(
         let detections_per_year =
             compute_rate(&eff_vs_z, pop.volumetric_rate(), omega_full_sky, &cosmo);
         let detections_total = detections_per_year * survey.duration_years;
+        // Effective volume-time (Gpc^3 yr) at unit volumetric rate. Used for
+        // Poisson upper limits via R_upper = N_upper(CL) / effective_vt.
+        let effective_vt_gpc3_yr =
+            compute_rate(&eff_vs_z, 1.0, omega_full_sky, &cosmo) * survey.duration_years;
 
         rate_summaries.push(survey_sim::efficiency::rates::RateSummary {
             transient_type: type_name.clone(),
@@ -522,7 +530,7 @@ fn run_pipeline_borrowed(
             z_max: actual_z_max,
             recovery: None,
         });
-        per_type_counts.push((n_transients, n_detected));
+        per_type_extras.push((n_transients, n_detected, effective_vt_gpc3_yr));
 
         // Phase 4: Build photometry for detected sources.
         // For each detected transient, pair model magnitudes with observation
@@ -581,7 +589,7 @@ fn run_pipeline_borrowed(
         n_simulated: total_simulated,
         n_detected: total_detected,
         rate_summaries,
-        per_type_counts,
+        per_type_extras,
         detected_sources: all_detected_sources,
     }
 }
@@ -844,8 +852,8 @@ struct PipelineResult {
     n_simulated: usize,
     n_detected: usize,
     rate_summaries: Vec<survey_sim::efficiency::rates::RateSummary>,
-    /// Parallel to `rate_summaries`: per-population (n_simulated, n_detected).
-    per_type_counts: Vec<(usize, usize)>,
+    /// Parallel to `rate_summaries`: (n_simulated, n_detected, effective_vt_gpc3_yr).
+    per_type_extras: Vec<(usize, usize, f64)>,
     detected_sources: Vec<DetectedSourceData>,
 }
 
@@ -1062,6 +1070,12 @@ pub struct PyRateSummary {
     /// Survey duration in years (mjd_max - mjd_min) / 365.25.
     #[pyo3(get)]
     pub survey_duration_years: f64,
+    /// Effective volume-time (Gpc^3 yr) at unit volumetric rate:
+    ///     VT_eff = T × 4π × ∫ eff(z) × dV/dz / (1+z) dz.
+    /// `detections_total = volumetric_rate × effective_vt_gpc3_yr`.
+    /// Used by `upper_limit()` to compute Poisson rate upper limits.
+    #[pyo3(get)]
+    pub effective_vt_gpc3_yr: f64,
 }
 
 #[pymethods]
@@ -1070,7 +1084,7 @@ impl PyRateSummary {
         format!(
             "RateSummary(type={}, rate={:.3e} Gpc^-3/yr, n_sim={}, n_det={}, \
              eff={:.4}, det/yr={:.3e}, det_total={:.3e}, \
-             z_max={:.2}, omega_sr={:.3e}, T={:.2} yr)",
+             z_max={:.2}, omega_sr={:.3e}, T={:.2} yr, VT_eff={:.3e} Gpc^3 yr)",
             self.transient_type,
             self.volumetric_rate,
             self.n_simulated,
@@ -1081,6 +1095,85 @@ impl PyRateSummary {
             self.z_max,
             self.survey_omega_sr,
             self.survey_duration_years,
+            self.effective_vt_gpc3_yr,
+        )
+    }
+
+    /// Compute a Poisson rate upper limit at the given confidence level.
+    ///
+    /// Uses `n_detected` as the observed count. For n=0 this is the exact
+    /// formula R_upper = -ln(1 - CL) / VT_eff; for n>0 it uses the
+    /// Gehrels (1986) Table 1 approximation.
+    ///
+    /// Returns a `RateUpperLimit` with `rate_upper` in Gpc^-3 yr^-1.
+    #[pyo3(signature = (confidence_level=0.90))]
+    fn upper_limit(&self, confidence_level: f64) -> PyRateUpperLimit {
+        let n_upper = survey_sim::efficiency::rates::poisson_upper_limit(
+            self.n_detected as u64,
+            confidence_level,
+        );
+        let rate_upper = if self.effective_vt_gpc3_yr > 0.0 {
+            n_upper / self.effective_vt_gpc3_yr
+        } else {
+            f64::INFINITY
+        };
+        PyRateUpperLimit {
+            transient_type: self.transient_type.clone(),
+            n_observed: self.n_detected as u64,
+            confidence_level,
+            n_upper,
+            effective_vt_gpc3_yr: self.effective_vt_gpc3_yr,
+            rate_upper,
+            survey_duration_years: self.survey_duration_years,
+            survey_omega_sr: self.survey_omega_sr,
+        }
+    }
+}
+
+/// Poisson upper limit on a volumetric rate.
+///
+/// Result of `PyRateSummary.upper_limit(cl)`. For n_observed = 0 the formula
+/// is exact: R_upper = -ln(1 - CL) / VT_eff. For n_observed > 0 uses the
+/// Gehrels (1986) approximation.
+#[pyclass]
+#[pyo3(name = "RateUpperLimit")]
+#[derive(Clone)]
+pub struct PyRateUpperLimit {
+    #[pyo3(get)]
+    pub transient_type: String,
+    /// Observed detection count used as `n` in the Poisson formula.
+    #[pyo3(get)]
+    pub n_observed: u64,
+    /// Confidence level in [0, 1], e.g. 0.90 for 90% CL.
+    #[pyo3(get)]
+    pub confidence_level: f64,
+    /// Poisson upper limit on count at this CL.
+    #[pyo3(get)]
+    pub n_upper: f64,
+    /// Effective volume-time in Gpc^3 yr (T × 4π × ∫ eff(z) dV/dz/(1+z) dz).
+    #[pyo3(get)]
+    pub effective_vt_gpc3_yr: f64,
+    /// Upper limit on volumetric rate in Gpc^-3 yr^-1.
+    #[pyo3(get)]
+    pub rate_upper: f64,
+    #[pyo3(get)]
+    pub survey_duration_years: f64,
+    #[pyo3(get)]
+    pub survey_omega_sr: f64,
+}
+
+#[pymethods]
+impl PyRateUpperLimit {
+    fn __repr__(&self) -> String {
+        format!(
+            "RateUpperLimit(type={}, N={}, CL={:.0}%, R_upper={:.3e} Gpc^-3/yr, \
+             N_upper={:.3}, VT_eff={:.3e} Gpc^3 yr)",
+            self.transient_type,
+            self.n_observed,
+            self.confidence_level * 100.0,
+            self.rate_upper,
+            self.n_upper,
+            self.effective_vt_gpc3_yr,
         )
     }
 }
@@ -1229,6 +1322,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySimulationResult>()?;
     m.add_class::<PyDetectedSource>()?;
     m.add_class::<PyRateSummary>()?;
+    m.add_class::<PyRateUpperLimit>()?;
     m.add_class::<PyTooSimulationResult>()?;
     m.add_function(wrap_pyfunction!(run_too_simulation, m)?)?;
     Ok(())

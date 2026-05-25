@@ -163,7 +163,7 @@ impl std::fmt::Display for RateUpperLimit {
 ///
 /// For n_observed = 0, the exact result is -ln(1 - CL).
 /// For n_observed > 0, uses the Gehrels (1986) approximation.
-fn poisson_upper_limit(n_observed: u64, confidence_level: f64) -> f64 {
+pub fn poisson_upper_limit(n_observed: u64, confidence_level: f64) -> f64 {
     if n_observed == 0 {
         // Exact: P(k=0 | lambda) = exp(-lambda) <= 1 - CL
         // => lambda >= -ln(1 - CL)
