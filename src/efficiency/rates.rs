@@ -159,28 +159,55 @@ impl std::fmt::Display for RateUpperLimit {
     }
 }
 
-/// Compute the Poisson upper limit on count for a given observed count and CL.
+/// Compute the one-sided Poisson upper limit on the mean count, given `n_observed`
+/// events at the requested confidence level.
 ///
-/// For n_observed = 0, the exact result is -ln(1 - CL).
-/// For n_observed > 0, uses the Gehrels (1986) approximation.
+/// This is the exact (Garwood) classical upper limit: the mean `mu_up` such that
+/// `P(X <= n_observed | mu_up) = 1 - CL` for `X ~ Poisson(mu_up)`. The Poisson CDF
+/// is strictly decreasing in `mu`, so we bracket and bisect — no special-function
+/// dependency needed, and the result varies smoothly with the confidence level
+/// (unlike the old bucketed Gehrels approximation, which returned identical limits
+/// for 90% and 95%).
+///
+/// For `n_observed = 0` this reduces to the familiar exact result `mu_up = -ln(1 - CL)`
+/// (e.g. 2.303 at 90%, 2.996 at 95%, 4.605 at 99%).
 pub fn poisson_upper_limit(n_observed: u64, confidence_level: f64) -> f64 {
-    if n_observed == 0 {
-        // Exact: P(k=0 | lambda) = exp(-lambda) <= 1 - CL
-        // => lambda >= -ln(1 - CL)
-        -(1.0 - confidence_level).ln()
-    } else {
-        // Gehrels (1986) Table 1 approximation for upper limits.
-        // For 90% CL (1.28σ) and small n:
-        let n = n_observed as f64;
-        let s = if confidence_level > 0.95 {
-            2.0 // ~2σ for 95% CL
-        } else if confidence_level > 0.85 {
-            1.282 // ~1.28σ for 90% CL
-        } else {
-            1.0 // ~1σ for 68% CL
-        };
-        n + s * n.sqrt() + 1.0
+    let cl = confidence_level.clamp(0.0, 1.0 - 1e-12);
+    let target = 1.0 - cl; // want CDF(n | mu) = target
+    let n = n_observed;
+
+    // Poisson CDF: P(X <= n | mu) = sum_{k=0}^{n} e^{-mu} mu^k / k!.
+    let cdf = |mu: f64| -> f64 {
+        if mu <= 0.0 {
+            return 1.0;
+        }
+        let mut term = (-mu).exp(); // k = 0
+        let mut sum = term;
+        for k in 1..=n {
+            term *= mu / k as f64;
+            sum += term;
+        }
+        sum.min(1.0)
+    };
+
+    // CDF is monotonically decreasing in mu; grow the upper bracket until it
+    // falls below the target, then bisect.
+    let mut lo = 0.0_f64;
+    let mut hi = (n as f64 + 1.0).max(1.0);
+    let mut guard = 0;
+    while cdf(hi) > target && guard < 200 {
+        hi *= 2.0;
+        guard += 1;
     }
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        if cdf(mid) > target {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
 }
 
 /// Compute a rate upper limit from an efficiency curve, observed count, and survey parameters.
@@ -362,5 +389,40 @@ mod tests {
         let omega = estimate_survey_omega(total_pixels, nside);
         // Full sky should be 4pi.
         assert!((omega - 4.0 * std::f64::consts::PI).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_poisson_upper_limit_zero_observed() {
+        // Exact closed form for n=0: mu_up = -ln(1 - CL).
+        for &cl in &[0.68_f64, 0.90, 0.95, 0.99] {
+            let want = -(1.0 - cl).ln();
+            let got = poisson_upper_limit(0, cl);
+            assert!(
+                (got - want).abs() < 1e-6,
+                "n=0 CL={cl}: want {want}, got {got}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_poisson_upper_limit_monotonic_in_cl() {
+        // Regression for the old bucketed Gehrels approximation, which returned
+        // identical limits for 90% and 95%. The limit must strictly increase
+        // with CL at every observed count.
+        for n in [0u64, 1, 5, 20] {
+            let l90 = poisson_upper_limit(n, 0.90);
+            let l95 = poisson_upper_limit(n, 0.95);
+            let l99 = poisson_upper_limit(n, 0.99);
+            assert!(l90 < l95, "n={n}: 90% ({l90}) should be < 95% ({l95})");
+            assert!(l95 < l99, "n={n}: 95% ({l95}) should be < 99% ({l99})");
+        }
+    }
+
+    #[test]
+    fn test_poisson_upper_limit_garwood_values() {
+        // Garwood one-sided 90% upper limits vs the chi-square reference
+        // mu_up = 0.5 * chi2inv(0.90, 2(n+1)): n=1 -> 3.8897, n=5 -> 9.2747.
+        assert!((poisson_upper_limit(1, 0.90) - 3.8897).abs() < 1e-3);
+        assert!((poisson_upper_limit(5, 0.90) - 9.2747).abs() < 1e-3);
     }
 }

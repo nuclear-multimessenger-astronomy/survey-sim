@@ -1101,15 +1101,22 @@ impl PyRateSummary {
 
     /// Compute a Poisson rate upper limit at the given confidence level.
     ///
-    /// Uses `n_detected` as the observed count. For n=0 this is the exact
-    /// formula R_upper = -ln(1 - CL) / VT_eff; for n>0 it uses the
-    /// Gehrels (1986) Table 1 approximation.
+    /// `n_observed` is the number of events *actually observed* in real data.
+    /// It defaults to 0, which gives the projected upper limit for a survey
+    /// non-detection — the standard "if we run this survey and see nothing,
+    /// what rate can we exclude?" forecast: R_upper = -ln(1 - CL) / VT_eff.
+    ///
+    /// NOTE: do not pass the simulated `n_detected` here. That count is drawn
+    /// at the *assumed* input `volumetric_rate` and only serves to measure the
+    /// efficiency (which is already folded into `effective_vt_gpc3_yr`); using
+    /// it as the observed count conflates the forecast with the assumed rate
+    /// and inflates the limit.
     ///
     /// Returns a `RateUpperLimit` with `rate_upper` in Gpc^-3 yr^-1.
-    #[pyo3(signature = (confidence_level=0.90))]
-    fn upper_limit(&self, confidence_level: f64) -> PyRateUpperLimit {
+    #[pyo3(signature = (confidence_level=0.90, n_observed=0))]
+    fn upper_limit(&self, confidence_level: f64, n_observed: u64) -> PyRateUpperLimit {
         let n_upper = survey_sim::efficiency::rates::poisson_upper_limit(
-            self.n_detected as u64,
+            n_observed,
             confidence_level,
         );
         let rate_upper = if self.effective_vt_gpc3_yr > 0.0 {
@@ -1119,7 +1126,7 @@ impl PyRateSummary {
         };
         PyRateUpperLimit {
             transient_type: self.transient_type.clone(),
-            n_observed: self.n_detected as u64,
+            n_observed,
             confidence_level,
             n_upper,
             effective_vt_gpc3_yr: self.effective_vt_gpc3_yr,
@@ -1132,9 +1139,9 @@ impl PyRateSummary {
 
 /// Poisson upper limit on a volumetric rate.
 ///
-/// Result of `PyRateSummary.upper_limit(cl)`. For n_observed = 0 the formula
-/// is exact: R_upper = -ln(1 - CL) / VT_eff. For n_observed > 0 uses the
-/// Gehrels (1986) approximation.
+/// Result of `PyRateSummary.upper_limit(cl, n_observed)`. The count limit is the
+/// exact (Garwood) one-sided Poisson upper limit; for n_observed = 0 this is
+/// R_upper = -ln(1 - CL) / VT_eff.
 #[pyclass]
 #[pyo3(name = "RateUpperLimit")]
 #[derive(Clone)]
