@@ -1,12 +1,16 @@
 #!/usr/bin/env python
-"""Run ZTF boom pipeline with best-fit AT2017gfo Bu2026 parameters,
-fixed inclination, tuned ejecta mass for g/r/i match."""
+"""Run Rubin LSST pipeline with best-fit AT2017gfo Bu2026 parameters,
+fixed inclination, tuned ejecta mass for g/r/i match.
+
+Counterpart to run_at2017gfo_ztf_fixed_incl.py — identical population, model,
+and detection criteria, swapping the survey for the Rubin baseline scheduler
+output. Together they give the apples-to-apples ZTF-vs-Rubin AT2017gfo
+projected upper limit comparison.
+"""
 import sys
 sys.path.insert(0, "/fred/oz480/mcoughli/simulations/survey-sim/python")
 sys.path.insert(0, "/fred/oz480/mcoughli/fiestaEM/src")
 import survey_sim.gpu_setup  # noqa: F401 — configure LD_LIBRARY_PATH for JAX GPU
-
-import glob
 
 from survey_sim import (
     SurveyStore,
@@ -16,11 +20,10 @@ from survey_sim import (
 )
 from survey_sim.fiesta_model import FiestaKNModel
 
-# Load all available ZTF boom data (2018 through present).
-boom_dir = "/fred/oz480/mcoughli/simulations/ztf_boom"
-boom_files = sorted(glob.glob(f"{boom_dir}/ztf_*.h5"))
-print(f"Loading {len(boom_files)} ZTF boom HDF5 files (full baseline)...")
-survey = SurveyStore.from_ztf_boom(boom_files, nside=64)
+# Load Rubin LSST baseline schedule (v5.1.1, 10 yr).
+rubin_db = "/fred/oz480/mcoughli/simulations/TESS-Rubin/baseline_v5.1.1_10yrs.db"
+print(f"Loading Rubin baseline schedule from {rubin_db}...")
+survey = SurveyStore.from_rubin(rubin_db, nside=64)
 print(f"  Observations: {survey.n_observations}")
 print(f"  MJD range: {survey.mjd_range}")
 print(f"  Duration: {survey.duration_years:.2f} years")
@@ -38,13 +41,13 @@ pop = FixedBu2026KilonovaPopulation(
     ye_wind=0.35,
     inclination_em=0.45,
     rate=1000.0,
-    # z_max chosen well above the AT2017gfo-bright ZTF detection horizon.
-    # compute_rate's integrand has already converged out here, so tightening
-    # further would dilute MC stats without biasing VT_eff.
-    z_max=0.15,
+    # Rubin sees ~5 mag deeper than ZTF (single-epoch), so the AT2017gfo-bright
+    # detection horizon pushes out to z ~ 0.3–0.4. Cap a bit beyond that so the
+    # rate integrand fully converges; tighter than 0.3 would risk truncating it.
+    z_max=0.4,
 )
 
-# ZTFReST-like detection criteria
+# ZTFReST-like detection criteria (same as ZTF run for apples-to-apples).
 det = DetectionCriteria(
     snr_threshold=5.0,
     snr_threshold_secondary=3.0,
