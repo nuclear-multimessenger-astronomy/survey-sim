@@ -77,11 +77,18 @@ def _serialize_dict_floats(d):
 def _deserialize_dict_floats(d):
     result = {}
     for k, v in d.items():
-        if isinstance(v, (float, str)):
-            try: result[k] = _deserialize_float(v)
-            except: result[k] = v
+        if isinstance(v, float):
+            result[k] = _deserialize_float(v)
+        elif isinstance(v, str) and v in {"NaN", "Infinity", "-Infinity"}:
+            result[k] = _deserialize_float(v)
         elif isinstance(v, dict): result[k] = _deserialize_dict_floats(v)
-        elif isinstance(v, list): result[k] = [_deserialize_float(x) if isinstance(x, (float, str)) else x for x in v]
+        elif isinstance(v, list):
+            result[k] = [
+                _deserialize_float(x)
+                if isinstance(x, float) or (isinstance(x, str) and x in {"NaN", "Infinity", "-Infinity"})
+                else x
+                for x in v
+            ]
         else: result[k] = v
     return result
 
