@@ -4,6 +4,13 @@ from pathlib import Path
 from typing import Any, Dict, Union
 import survey_sim
 
+def _format_rust_e(val, precision=3):
+    """Formats floats to match Rust's scientific display (e.g., 1.115e0 instead of 1.115e+00)"""
+    if val == float('inf'):
+        return "inf"
+    base, exp = f"{val:.{precision}e}".split('e')
+    return f"{base}e{int(exp)}"
+
 
 def save_result(result: Any, filepath: Union[str, Path], overwrite: bool = False) -> None:
     """Save a survey-sim result object to JSON."""
@@ -110,8 +117,8 @@ def _serialize_rate_summary(rs):
 
 
 def _serialize_detected_source(source):
-    times, mags, errs, bands = source.photometry
-    nd_times, nd_depths, nd_bands = source.non_detections
+    times, mags, errs, bands = source.photometry()
+    nd_times, nd_depths, nd_bands = source.non_detections()
     return _serialize_dict_floats({
         "z": source.z,
         "peak_abs_mag": source.peak_abs_mag,
@@ -198,24 +205,76 @@ def _deserialize_coverage_result_3d(data):
 class _MockRateSummary:
     def __init__(self, data):
         for k, v in data.items(): setattr(self, k, v)
+
     def upper_limit(self, confidence_level=0.90, n_observed=0):
-        from survey_sim.efficiency.rates import poisson_upper_limit
-        n_upper = poisson_upper_limit(n_observed, confidence_level)
+        # Calculate the Poisson upper limit directly using scipy
+        from scipy.stats import chi2
+        alpha = 1.0 - confidence_level
+        n_upper = 0.5 * chi2.ppf(1.0 - alpha, 2 * (n_observed + 1))
+        
         rate_upper = n_upper / self.effective_vt_gpc3_yr if self.effective_vt_gpc3_yr > 0 else float("inf")
-        return _MockRateUpperLimit(self.transient_type, n_observed, confidence_level, n_upper, self.effective_vt_gpc3_yr, rate_upper, self.survey_duration_years, self.survey_omega_sr)
-    def __repr__(self): return f"RateSummary({self.transient_type}, {self.volumetric_rate:.3e})"
+        return _MockRateUpperLimit(
+            self.transient_type, 
+            n_observed, 
+            confidence_level, 
+            n_upper, 
+            self.effective_vt_gpc3_yr, 
+            rate_upper, 
+            self.survey_duration_years, 
+            self.survey_omega_sr
+        )
+
+    def __repr__(self):
+        rate_str = _format_rust_e(self.volumetric_rate, 3)
+        omega_str = _format_rust_e(self.survey_omega_sr, 3)
+        vt_eff_str = _format_rust_e(self.effective_vt_gpc3_yr, 3)
+        
+        # Grab sim/det counts from the JSON payload
+        n_sim = getattr(self, 'n_simulated', 0)
+        n_det = getattr(self, 'n_detected', 0)
+        
+        # Calculate derived values natively like Rust does
+        eff = getattr(self, 'efficiency', n_det / max(n_sim, 1))
+        
+        # det_total = rate * VT_eff
+        calc_det_total = self.volumetric_rate * self.effective_vt_gpc3_yr
+        det_tot = getattr(self, 'det_total', calc_det_total)
+        det_tot_str = _format_rust_e(det_tot, 3)
+        
+        # det_per_yr = det_total / T
+        calc_det_yr = det_tot / self.survey_duration_years if self.survey_duration_years > 0 else 0
+        det_yr_str = _format_rust_e(getattr(self, 'det_per_yr', calc_det_yr), 3)
+        
+        z_max = getattr(self, 'z_max', 0.0)
+
+        return (f"RateSummary(type={self.transient_type}, rate={rate_str} Gpc^-3/yr, "
+                f"n_sim={n_sim}, n_det={n_det}, eff={eff:.4f}, det/yr={det_yr_str}, "
+                f"det_total={det_tot_str}, z_max={z_max:.2f}, omega_sr={omega_str}, "
+                f"T={self.survey_duration_years:.2f} yr, VT_eff={vt_eff_str} Gpc^3 yr)")
 
 
 class _MockRateUpperLimit:
-    def __init__(self, transient_type, n_observed, confidence_level, n_upper, effective_vt, rate_upper, duration, omega):
+    def __init__(self, transient_type, n_observed, confidence_level, n_upper, effective_vt_gpc3_yr, rate_upper, survey_duration_years, survey_omega_sr):
         self.transient_type = transient_type
         self.n_observed = n_observed
         self.confidence_level = confidence_level
         self.n_upper = n_upper
-        self.effective_vt_gpc3_yr = effective_vt
+        self.effective_vt_gpc3_yr = effective_vt_gpc3_yr
         self.rate_upper = rate_upper
-        self.survey_duration_years = duration
-        self.survey_omega_sr = omega
+        self.survey_duration_years = survey_duration_years
+        self.survey_omega_sr = survey_omega_sr
+
+    def __repr__(self):
+        cl_percent = int(self.confidence_level * 100)
+        r_upper_str = _format_rust_e(self.rate_upper, 3)
+        vt_eff_str = _format_rust_e(self.effective_vt_gpc3_yr, 3)
+        
+        return (f"RateUpperLimit(type={self.transient_type}, "
+                f"N={self.n_observed}, "
+                f"CL={cl_percent}%, "
+                f"R_upper={r_upper_str} Gpc^-3/yr, "
+                f"N_upper={self.n_upper:.3f}, "
+                f"VT_eff={vt_eff_str} Gpc^3 yr)")
 
 
 class _MockDetectedSource:
@@ -226,11 +285,18 @@ class _MockDetectedSource:
         self._non_detections = (data["non_detections_times"], data["non_detections_depths"], data["non_detections_bands"])
         for k in ["z", "peak_abs_mag", "t_exp", "transient_type", "true_params"]:
             if k in data: setattr(self, k, data[k])
-    @property
+            
     def photometry(self): return self._photometry
-    @property
     def non_detections(self): return self._non_detections
-    def __repr__(self): return f"DetectedSource({self.transient_type})"
+    def __repr__(self):
+        # Extract unique bands using the callable method
+        if callable(self.photometry):
+            _, _, _, bands = self.photometry()
+        else:
+            _, _, _, bands = self.photometry
+            
+        unique_bands = ",".join(sorted(set(bands)))
+        return f"DetectedSource(type={self.transient_type}, z={self.z:.3f}, n_obs={self.n_obs}, bands={unique_bands})"
 
 
 class _MockSimulationResult:
@@ -245,15 +311,40 @@ class _MockSimulationResult:
     def sources(self): return self.detected_sources
     @property
     def n_sources(self): return len(self.detected_sources)
-    def __repr__(self): return f"SimulationResult(sim={self.n_simulated}, det={self.n_detected})"
     def __str__(self):
         eff = self.n_detected / max(self.n_simulated, 1)
-        s = f"SimulationResult\n  n_simulated: {self.n_simulated}\n  n_detected: {self.n_detected}\n  efficiency: {eff:.4f}\n  sources: {len(self.detected_sources)}\n"
-        if self.rate_summaries:
-            s += "  rate_summaries:\n"
-            for rs in self.rate_summaries:
-                s += f"    {rs.transient_type}: {rs.volumetric_rate:.3e} Gpc^-3/yr\n"
-        return s
+        lines = [
+            "SimulationResult",
+            f"  n_simulated: {self.n_simulated}",
+            f"  n_detected:  {self.n_detected}",
+            f"  efficiency:  {eff:.4f}",
+            f"  sources:     {self.n_sources}",
+            "  rate_summaries:"
+        ]
+        for rs in self.rate_summaries:
+            rate_str = _format_rust_e(rs.volumetric_rate, 3)
+            omega_str = _format_rust_e(rs.survey_omega_sr, 3)
+            
+            n_sim = getattr(rs, 'n_simulated', 0)
+            n_det = getattr(rs, 'n_detected', 0)
+            rs_eff = getattr(rs, 'efficiency', n_det / max(n_sim, 1))
+            
+            calc_det_total = rs.volumetric_rate * rs.effective_vt_gpc3_yr
+            det_tot = getattr(rs, 'det_total', calc_det_total)
+            det_tot_str = _format_rust_e(det_tot, 3)
+            
+            calc_det_yr = det_tot / rs.survey_duration_years if rs.survey_duration_years > 0 else 0
+            det_yr_str = _format_rust_e(getattr(rs, 'det_per_yr', calc_det_yr), 3)
+            
+            lines.append(f"    {rs.transient_type} : rate={rate_str} Gpc^-3/yr, eff={rs_eff:.4f}, "
+                         f"det/yr={det_yr_str}, det_total={det_tot_str} "
+                         f"(T={rs.survey_duration_years:.2f} yr, omega={omega_str} sr)")
+                         
+        return "\n".join(lines) + "\n"
+
+    def __repr__(self):
+        eff = self.n_detected / max(self.n_simulated, 1)
+        return f"SimulationResult(n_simulated={self.n_simulated}, n_detected={self.n_detected}, efficiency={eff:.4f}, sources={self.n_sources})"
 
 
 class _MockTooSimulationResult:
