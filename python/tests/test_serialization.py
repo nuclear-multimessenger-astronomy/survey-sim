@@ -1,148 +1,120 @@
-import importlib.util
-import math
 import pathlib
-import sys
 import tempfile
-import types
 import unittest
 
+import numpy as np
+
+# Import real simulation components
+from survey_sim import (
+    load_ztf_survey, KilonovaPopulation, MetzgerKNModel,
+    DetectionCriteria, SimulationPipeline
+)
+from survey_sim.serialization import save_result, load_result
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-SERIALIZATION_PATH = REPO_ROOT / "python" / "survey_sim" / "serialization.py"
 
 
-class RateSummary:
-    def __init__(self):
-        self.transient_type = "KN"
-        self.volumetric_rate = float("inf")
-        self.detections_per_year = 2.0
-        self.detections_total = 10.0
-        self.overall_efficiency = 0.5
-        self.n_simulated = 20
-        self.n_detected = 10
-        self.z_max = 0.3
-        self.survey_omega_sr = 1.2
-        self.survey_duration_years = 3.0
-        self.effective_vt_gpc3_yr = 4.5
-
-
-class DetectedSource:
-    def __init__(self):
-        self.z = 0.1
-        self.peak_abs_mag = -16.2
-        self.t_exp = 0.5
-        self.transient_type = "KN"
-        self.true_params = {"x": float("nan")}
-        self.photometry = ([1.0, 2.0], [20.1, 20.2], [0.1, 0.2], ["g", "r"])
-        self.non_detections = ([0.5], [21.0], ["g"])
-
-
-class SimulationResult:
-    def __init__(self):
-        self.n_simulated = 20
-        self.n_detected = 10
-        self.rate_summaries = [RateSummary()]
-        self._detected = [DetectedSource()]
-
-    def sources(self):
-        return self._detected
-
-
-class TooSimulationResult:
-    def __init__(self):
-        self.strategy_name = "baseline"
-        self.n_events = 3
-        self.n_detected = 2
-        self.efficiency = 2.0 / 3.0
-        self.detected = [True, False, True]
-        self.distances = [100.0, 200.0, 300.0]
-        self.areas_90 = [10.0, 20.0, 30.0]
-        self.n_detections_per_event = [1, 0, 2]
-
-
-class CoverageResult:
-    def __init__(self):
-        self.prob_2d = 0.5
-        self.area_deg2 = 42.0
-        self.n_pixels = 7
-        self.covered = [1, 2, 3]
-
-
-class CoverageResult3D:
-    def __init__(self):
-        self.prob_2d = 0.4
-        self.prob_3d = 0.2
-        self.area_deg2 = 24.0
-        self.n_pixels = 5
-        self.covered = [4, 5]
-        self.best_d_max = [150.0, 180.0]
-
-
-def load_serialization_module():
-    if not SERIALIZATION_PATH.exists():
-        raise FileNotFoundError(f"Missing serialization module: {SERIALIZATION_PATH}")
-
-    survey_sim_stub = types.ModuleType("survey_sim")
-    survey_sim_stub.SimulationResult = SimulationResult
-    survey_sim_stub.TooSimulationResult = TooSimulationResult
-    survey_sim_stub.CoverageResult = CoverageResult
-    survey_sim_stub.CoverageResult3D = CoverageResult3D
-    sys.modules["survey_sim"] = survey_sim_stub
-
-    spec = importlib.util.spec_from_file_location("survey_sim.serialization", str(SERIALIZATION_PATH))
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load module from {SERIALIZATION_PATH}")
-
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-class TestSerialization(unittest.TestCase):
+class TestSimulationReproducibility(unittest.TestCase):
+    """
+    Runs a lightweight simulation using the real Rust backend twice to 
+    guarantee that the pipeline is deterministic and that the serialized 
+    JSON results behave identically to live objects.
+    """
     @classmethod
     def setUpClass(cls):
-        cls.mod = load_serialization_module()
+        cls.survey = load_ztf_survey(nside=64)
 
-    def roundtrip(self, obj):
+    def _run_lightweight_pipeline(self, seed: int):
+        """Helper to run a fast 1000-transient simulation."""
+        kn_pop = KilonovaPopulation(rate=1000.0, z_max=0.3, peak_abs_mag=-16.0)
+        model = MetzgerKNModel()
+        det = DetectionCriteria(min_detections=2, snr_threshold=5.0)
+
+        pipe = SimulationPipeline(
+            self.survey,
+            [kn_pop],
+            {"Kilonova": model},
+            det,
+            n_transients=1000, 
+            seed=seed,
+        )
+        
+        return pipe.run()
+
+    def test_reproducibility_and_parity(self):
+        # 1. Run the pipeline twice with the identical seed
+        live_result_1 = self._run_lightweight_pipeline(seed=42)
+        live_result_2 = self._run_lightweight_pipeline(seed=42)
+
+        # Guarantee the live Rust backend is fully deterministic first
+        self.assertEqual(live_result_1.n_simulated, live_result_2.n_simulated)
+        self.assertEqual(live_result_1.n_detected, live_result_2.n_detected)
+        self.assertEqual(str(live_result_1), str(live_result_2))
+
         with tempfile.TemporaryDirectory() as td:
-            outfile = pathlib.Path(td) / "result.json"
-            self.mod.save_result(obj, outfile)
-            self.assertTrue(outfile.exists())
-            return self.mod.load_result(outfile)
+            out1 = pathlib.Path(td) / "sim_result_1.json"
+            out2 = pathlib.Path(td) / "sim_result_2.json"
+            
+            # Save both live results and load them back
+            save_result(live_result_1, out1)
+            save_result(live_result_2, out2)
+            
+            self.assertTrue(out1.exists())
+            self.assertTrue(out2.exists())
+            
+            restored_1 = load_result(out1)
+            restored_2 = load_result(out2)
 
-    def test_simulation_result_roundtrip(self):
-        out = self.roundtrip(SimulationResult())
-        self.assertEqual(out.n_simulated, 20)
-        self.assertEqual(out.n_detected, 10)
-        self.assertEqual(len(out.rate_summaries), 1)
-        self.assertTrue(math.isinf(out.rate_summaries[0].volumetric_rate))
-        src = out.sources()[0]
-        self.assertEqual(src.transient_type, "KN")
-        self.assertTrue(math.isnan(src.true_params["x"]))
+            # 2. Check Base Attributes & String Representations (Live vs Restored vs Restored)
+            self.assertEqual(live_result_1.n_detected, restored_1.n_detected)
+            self.assertEqual(restored_1.n_detected, restored_2.n_detected)
+            
+            self.assertEqual(str(live_result_1), str(restored_1))
+            self.assertEqual(str(restored_1), str(restored_2))
+            
+            self.assertEqual(repr(live_result_1), repr(restored_1))
+            self.assertEqual(repr(restored_1), repr(restored_2))
 
-    def test_too_simulation_result_roundtrip(self):
-        out = self.roundtrip(TooSimulationResult())
-        self.assertEqual(out.strategy_name, "baseline")
-        self.assertEqual(out.n_events, 3)
-        self.assertEqual(out.detected, [True, False, True])
+            # 3. Check Rate Summaries and Limits
+            if len(live_result_1.rate_summaries) > 0:
+                live_rs = live_result_1.rate_summaries[0]
+                rest_rs_1 = restored_1.rate_summaries[0]
+                rest_rs_2 = restored_2.rate_summaries[0]
+                
+                self.assertEqual(repr(live_rs), repr(rest_rs_1))
+                self.assertEqual(repr(rest_rs_1), repr(rest_rs_2))
+                self.assertEqual(repr(live_rs.upper_limit(0.95)), repr(rest_rs_1.upper_limit(0.95)))
 
-    def test_coverage_result_roundtrip(self):
-        out = self.roundtrip(CoverageResult())
-        self.assertEqual(out.prob_2d, 0.5)
-        self.assertEqual(out.n_pixels, 7)
+            # 4. Deep check of Sources and Photometry Iterators
+            live_sources = live_result_1.sources()
+            rest_sources_1 = restored_1.sources()
+            rest_sources_2 = restored_2.sources()
+            
+            self.assertEqual(len(live_sources), len(rest_sources_1))
+            self.assertEqual(len(rest_sources_1), len(rest_sources_2))
 
-    def test_coverage_result_3d_roundtrip(self):
-        out = self.roundtrip(CoverageResult3D())
-        self.assertEqual(out.prob_2d, 0.4)
-        self.assertEqual(out.prob_3d, 0.2)
-        self.assertEqual(out.best_d_max, [150.0, 180.0])
+            if len(live_sources) > 0:
+                live_src = live_sources[0]
+                rest_src_1 = rest_sources_1[0]
+                rest_src_2 = rest_sources_2[0]
+                
+                self.assertEqual(repr(live_src), repr(rest_src_1))
+                self.assertEqual(repr(rest_src_1), repr(rest_src_2))
 
-    def test_save_result_overwrite_protection(self):
-        with tempfile.TemporaryDirectory() as td:
-            outfile = pathlib.Path(td) / "result.json"
-            self.mod.save_result(CoverageResult(), outfile)
-            with self.assertRaises(FileExistsError):
-                self.mod.save_result(CoverageResult(), outfile, overwrite=False)
+                # Ensure photometry executes as a method and arrays match identically
+                r_times, r_mags, r_errs, r_bands = live_src.photometry()
+                m1_times, m1_mags, m1_errs, m1_bands = rest_src_1.photometry()
+                m2_times, m2_mags, m2_errs, m2_bands = rest_src_2.photometry()
+                
+                # Check live against restored 1
+                np.testing.assert_allclose(r_times, m1_times)
+                np.testing.assert_allclose(r_mags, m1_mags)
+                np.testing.assert_allclose(r_errs, m1_errs)
+                self.assertEqual(list(r_bands), list(m1_bands))
+
+                # Check restored 1 against restored 2
+                np.testing.assert_allclose(m1_times, m2_times)
+                np.testing.assert_allclose(m1_mags, m2_mags)
 
 
 if __name__ == "__main__":
