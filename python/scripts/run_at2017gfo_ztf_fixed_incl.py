@@ -1,9 +1,19 @@
 #!/usr/bin/env python
 """Run ZTF boom pipeline with best-fit AT2017gfo Bu2026 parameters,
 fixed inclination, tuned ejecta mass for g/r/i match."""
+import argparse
+parser = argparse.ArgumentParser(description="Provide relevant paths")
+parser.add_argument("--survey-sim", type=str, default="/fred/oz480/mcoughli/simulations/survey-sim/python", help="path to survey-sim python folder")
+parser.add_argument("--fiesta", type=str, default="/fred/oz480/mcoughli/fiestaEM/src", help="path to fiestaEM")
+parser.add_argument("--boom", type=str, default="/fred/oz480/mcoughli/simulations/ztf_boom", help="path to ZTF boom data")
+args = parser.parse_args()
+
+survey_sim_dir = args.survey_sim
+fiestaEM_dir = args.fiesta
+
 import sys
-sys.path.insert(0, "/fred/oz480/mcoughli/simulations/survey-sim/python")
-sys.path.insert(0, "/fred/oz480/mcoughli/fiestaEM/src")
+sys.path.insert(0, survey_sim_dir)
+sys.path.insert(0, fiestaEM_dir)
 import survey_sim.gpu_setup  # noqa: F401 — configure LD_LIBRARY_PATH for JAX GPU
 
 import glob
@@ -17,7 +27,7 @@ from survey_sim import (
 from survey_sim.fiesta_model import FiestaKNModel
 
 # Load all available ZTF boom data (2018 through present).
-boom_dir = "/fred/oz480/mcoughli/simulations/ztf_boom"
+boom_dir = args.boom
 boom_files = sorted(glob.glob(f"{boom_dir}/ztf_*.h5"))
 print(f"Loading {len(boom_files)} ZTF boom HDF5 files (full baseline)...")
 survey = SurveyStore.from_ztf_boom(boom_files, nside=64)
