@@ -217,6 +217,7 @@ fn build_photometry_from_eval(
     eval: &survey_sim::lightcurve::LightcurveEvaluation,
     obs: Vec<&survey_sim::survey::SurveyObservation>,
     inst: &survey_sim::types::TransientInstance,
+    save_sub_threshold: bool,
 ) -> (Vec<(f64, f64, f64, String)>, Vec<(f64, f64, String)>) {
     let mut photometry = Vec::new();
     let mut non_detections = Vec::new();
@@ -267,10 +268,10 @@ fn build_photometry_from_eval(
 
         // SNR = 5 * 10^(0.4 * (depth - mag))
         let snr = 5.0 * 10f64.powf(0.4 * (depth - model_mag));
+        let mag_err = 1.0857362 / snr;
 
         if snr >= 5.0 {
             // Detection: add noise and record
-            let mag_err = 1.0857362 / snr;
             let u1: f64 = rng.random::<f64>().max(1e-10);
             let u2: f64 = rng.random::<f64>();
             let gauss: f64 = (-2.0f64 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
@@ -279,6 +280,21 @@ fn build_photometry_from_eval(
         } else {
             // Non-detection: record the depth as upper limit
             non_detections.push((observation.mjd, depth, band_name.to_string()));
+            
+            // If flagged (undetected sources), ALSO save the sub-threshold photometry
+            if save_sub_threshold {
+                // Discard observation if outside a reasonable range, otherwise we get some huge or miniscule values for undetected sources.
+                let upper_limit = 30.0;
+                let lower_limit = 0.0;
+                let u1: f64 = rng.random::<f64>().max(1e-10);
+                let u2: f64 = rng.random::<f64>();
+                let gauss: f64 = (-2.0f64 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+                let observed_mag = model_mag + mag_err * gauss;
+                if observed_mag < lower_limit || observed_mag > upper_limit {
+                    continue;
+                }
+                photometry.push((observation.mjd, observed_mag, mag_err, band_name.to_string()));
+            }
         }
     }
 
@@ -570,11 +586,10 @@ fn run_pipeline_borrowed(
         for &idx in &detected_idx {
             let inst = &instances[idx];
 
-            // Get evaluation + observations (prefer stacked if available).
             let (photometry, non_detections) = if let Some(ref sm) = stacked_map {
                 if let Some(&&ref entry) = sm.get(&idx) {
                     let (_, ref obs_vec, ref eval) = entry;
-                    build_photometry_from_eval(eval, obs_vec.iter().collect(), inst)
+                    build_photometry_from_eval(eval, obs_vec.iter().collect(), inst, false)
                 } else {
                     continue;
                 }
@@ -582,7 +597,7 @@ fn run_pipeline_borrowed(
                 let (_, ref obs_indices, ref eval) = entry;
                 let obs_refs: Vec<&survey_sim::survey::SurveyObservation> =
                     obs_indices.iter().map(|&oi| survey.get(oi)).collect();
-                build_photometry_from_eval(eval, obs_refs, inst)
+                build_photometry_from_eval(eval, obs_refs, inst, false)
             } else {
                 continue;
             };
@@ -606,7 +621,7 @@ fn run_pipeline_borrowed(
                 let (photometry, non_detections) = if let Some(ref sm) = stacked_map {
                     if let Some(&&ref entry) = sm.get(&idx) {
                         let (_, ref obs_vec, ref eval) = entry;
-                        build_photometry_from_eval(eval, obs_vec.iter().collect(), inst)
+                        build_photometry_from_eval(eval, obs_vec.iter().collect(), inst, true)
                     } else {
                         continue;
                     }
@@ -614,7 +629,7 @@ fn run_pipeline_borrowed(
                     let (_, ref obs_indices, ref eval) = entry;
                     let obs_refs: Vec<&survey_sim::survey::SurveyObservation> =
                         obs_indices.iter().map(|&oi| survey.get(oi)).collect();
-                    build_photometry_from_eval(eval, obs_refs, inst)
+                    build_photometry_from_eval(eval, obs_refs, inst, true)
                 } else {
                     continue;
                 };
