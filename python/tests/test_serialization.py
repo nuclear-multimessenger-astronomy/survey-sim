@@ -1,6 +1,7 @@
 import pathlib
 import tempfile
 import unittest
+import json
 
 import numpy as np
 
@@ -40,6 +41,66 @@ class TestSimulationReproducibility(unittest.TestCase):
         )
         
         return pipe.run()
+
+    def test_pipeline_collects_undetected_sources_when_requested(self):
+        kn_pop = KilonovaPopulation(rate=1000.0, z_max=0.2, peak_abs_mag=-16.0)
+        model = MetzgerKNModel()
+        det = DetectionCriteria(min_detections=2, snr_threshold=10.0)
+
+        pipe = SimulationPipeline(
+            self.survey,
+            [kn_pop],
+            {"Kilonova": model},
+            det,
+            n_transients=200,
+            seed=7,
+        )
+
+        result = pipe.run(include_undetected=True)
+        self.assertTrue(hasattr(result, "n_undetected"))
+        self.assertTrue(hasattr(result, "undetected_sources"))
+        self.assertEqual(result.n_undetected, len(result.undetected_sources))
+        self.assertGreaterEqual(result.n_undetected, 0)
+
+    def test_serialization_handles_optional_undetected_outputs(self):
+        kn_pop = KilonovaPopulation(rate=1000.0, z_max=0.2, peak_abs_mag=-16.0)
+        model = MetzgerKNModel()
+        det = DetectionCriteria(min_detections=2, snr_threshold=10.0)
+        pipe = SimulationPipeline(
+            self.survey,
+            [kn_pop],
+            {"Kilonova": model},
+            det,
+            n_transients=200,
+            seed=7,
+        )
+
+        default_result = pipe.run()
+        undetected_result = pipe.run(include_undetected=True)
+
+        with tempfile.TemporaryDirectory() as td:
+            default_path = pathlib.Path(td) / "default.json"
+            undetected_path = pathlib.Path(td) / "with_undetected.json"
+
+            save_result(default_result, default_path)
+            save_result(undetected_result, undetected_path)
+
+            with open(default_path, "r") as f:
+                default_payload = json.load(f)
+            with open(undetected_path, "r") as f:
+                undetected_payload = json.load(f)
+
+            self.assertNotIn("n_undetected", default_payload)
+            self.assertNotIn("undetected_sources", default_payload)
+            self.assertIn("n_undetected", undetected_payload)
+            self.assertIn("undetected_sources", undetected_payload)
+
+            restored = load_result(undetected_path)
+            self.assertEqual(restored.n_undetected, len(restored.undetected_sources))
+            self.assertEqual(
+                restored.n_undetected,
+                undetected_result.n_undetected,
+            )
 
     def test_reproducibility_and_parity(self):
         # 1. Run the pipeline twice with the identical seed
