@@ -11,8 +11,39 @@ def _format_rust_e(val, precision=3):
     base, exp = f"{val:.{precision}e}".split('e')
     return f"{base}e{int(exp)}"
 
+def _truncate_payload(obj: Any, time_decimals: int = 3, mag_decimals: int = 3, params_decimals: int = 5) -> Any:
+    """
+    Recursively traverses the payload to truncate overly precise floats.
+    Targets specific keys (e.g., times, mags, depths) for custom precision.
+    """
+    if isinstance(obj, float):
+        # Fallback for generic floats
+        return round(obj, params_decimals) 
+    
+    elif isinstance(obj, dict):
+        truncated_dict = {}
+        for k, v in obj.items():
+            ## skip rate_summaries
+            if k == "rate_summaries":
+                truncated_dict[k] = v
+            # Apply decimal places to time-related floats
+            if isinstance(v, float) and ('time' in k or 't_exp' in k):
+                truncated_dict[k] = round(v, time_decimals)
+            # Apply decimal places to magnitude/depth-related floats
+            elif isinstance(v, float) and ('mag' in k or 'depth' in k or 'photometry_errs' in k):
+                truncated_dict[k] = round(v, mag_decimals)
+            # Recursively process nested dictionaries or lists
+            else:
+                truncated_dict[k] = _truncate_payload(v, time_decimals, mag_decimals)
+        return truncated_dict
+        
+    elif isinstance(obj, list):
+        return [_truncate_payload(item, time_decimals, mag_decimals) for item in obj]
+        
+    return obj
 
-def save_result(result: Any, filepath: Union[str, Path], overwrite: bool = False) -> None:
+
+def save_result(result: Any, filepath: Union[str, Path], overwrite: bool = False, truncate: bool = True) -> None:
     """Save a survey-sim result object to JSON."""
     filepath = Path(filepath)
     if filepath.exists() and not overwrite:
@@ -29,6 +60,9 @@ def save_result(result: Any, filepath: Union[str, Path], overwrite: bool = False
     else:
         raise ValueError(f"Unsupported: {type(result)}")
     
+    if truncate:
+        data = _truncate_payload(data)
+
     filepath.parent.mkdir(parents=True, exist_ok=True)
     with open(filepath, 'w') as f:
         json.dump(data, f, indent=2)
