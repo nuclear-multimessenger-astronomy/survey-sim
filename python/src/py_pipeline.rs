@@ -60,7 +60,8 @@ impl PySimulationPipeline {
     }
 
     /// Run the simulation pipeline.
-    fn run(&self, py: Python<'_>) -> PyResult<PySimulationResult> {
+    #[pyo3(signature = (include_undetected = false))]
+    fn run(&self, py: Python<'_>, include_undetected: bool) -> PyResult<PySimulationResult> {
         let survey_ref = self.survey.borrow(py);
         let det_ref = self.detection.borrow(py);
 
@@ -158,6 +159,7 @@ impl PySimulationPipeline {
                 self.seed,
                 stack_windows_s,
                 time_window_days,
+                include_undetected,
             )
         });
 
@@ -166,6 +168,7 @@ impl PySimulationPipeline {
         Ok(PySimulationResult {
             n_simulated: result.n_simulated,
             n_detected: result.n_detected,
+            n_undetected: result.n_undetected,
             rate_summaries: result
                 .rate_summaries
                 .iter()
@@ -192,6 +195,11 @@ impl PySimulationPipeline {
                 .collect(),
             detected_sources: result
                 .detected_sources
+                .into_iter()
+                .map(|ds| PyDetectedSource { data: ds })
+                .collect(),
+            undetected_sources: result
+                .undetected_sources
                 .into_iter()
                 .map(|ds| PyDetectedSource { data: ds })
                 .collect(),
@@ -286,6 +294,7 @@ fn run_pipeline_borrowed(
     seed: u64,
     stack_windows_s: Option<Vec<f64>>,
     time_window_days: f64,
+    include_undetected: bool,
 ) -> PipelineResult {
     use rayon::prelude::*;
     use rand::SeedableRng;
@@ -296,10 +305,12 @@ fn run_pipeline_borrowed(
 
     let mut total_simulated = 0usize;
     let mut total_detected = 0usize;
+    let mut total_undetected = 0usize;
     let mut rate_summaries = Vec::new();
     // Parallel to `rate_summaries`: (n_simulated, n_detected, effective_vt_gpc3_yr).
     let mut per_type_extras: Vec<(usize, usize, f64)> = Vec::new();
     let mut all_detected_sources: Vec<DetectedSourceData> = Vec::new();
+    let mut all_undetected_sources: Vec<DetectedSourceData> = Vec::new();
 
     for pop in populations {
         let instances = pop.generate(n_transients, &mut rng);
@@ -532,14 +543,22 @@ fn run_pipeline_borrowed(
         });
         per_type_extras.push((n_transients, n_detected, effective_vt_gpc3_yr));
 
-        // Phase 4: Build photometry for detected sources.
-        // For each detected transient, pair model magnitudes with observation
-        // depths to produce realistic (mjd, mag, mag_err, band) tuples.
+        // Phase 4: Build photometry for detected sources and, optionally,
+        // matched-but-not-detected transients for debugging and follow-up analysis.
         let detected_idx: Vec<usize> = detection_results
             .iter()
             .filter(|(_, d)| d.detected)
             .map(|(idx, _)| *idx)
             .collect();
+        let undetected_idx: Vec<usize> = if include_undetected {
+            detection_results
+                .iter()
+                .filter(|(_, d)| !d.detected)
+                .map(|(idx, _)| *idx)
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         // Build lookup from instance index to evaluation data.
         let eval_map: HashMap<usize, &(usize, Vec<usize>, survey_sim::lightcurve::LightcurveEvaluation)> =
@@ -581,6 +600,40 @@ fn run_pipeline_borrowed(
             }
         }
 
+        if include_undetected {
+            for &idx in &undetected_idx {
+                let inst = &instances[idx];
+                let (photometry, non_detections) = if let Some(ref sm) = stacked_map {
+                    if let Some(&&ref entry) = sm.get(&idx) {
+                        let (_, ref obs_vec, ref eval) = entry;
+                        build_photometry_from_eval(eval, obs_vec.iter().collect(), inst)
+                    } else {
+                        continue;
+                    }
+                } else if let Some(&&ref entry) = eval_map.get(&idx) {
+                    let (_, ref obs_indices, ref eval) = entry;
+                    let obs_refs: Vec<&survey_sim::survey::SurveyObservation> =
+                        obs_indices.iter().map(|&oi| survey.get(oi)).collect();
+                    build_photometry_from_eval(eval, obs_refs, inst)
+                } else {
+                    continue;
+                };
+
+                if !photometry.is_empty() || !non_detections.is_empty() {
+                    all_undetected_sources.push(DetectedSourceData {
+                        true_params: inst.model_params.clone(),
+                        z: inst.z,
+                        peak_abs_mag: inst.peak_abs_mag,
+                        t_exp: inst.t_exp,
+                        transient_type: type_name.to_string(),
+                        photometry,
+                        non_detections,
+                    });
+                    total_undetected += 1;
+                }
+            }
+        }
+
         total_simulated += n_transients;
         total_detected += n_detected;
     }
@@ -588,9 +641,11 @@ fn run_pipeline_borrowed(
     PipelineResult {
         n_simulated: total_simulated,
         n_detected: total_detected,
+        n_undetected: total_undetected,
         rate_summaries,
         per_type_extras,
         detected_sources: all_detected_sources,
+        undetected_sources: all_undetected_sources,
     }
 }
 
@@ -851,13 +906,16 @@ fn stack_flux_average(
 struct PipelineResult {
     n_simulated: usize,
     n_detected: usize,
+    n_undetected: usize,
     rate_summaries: Vec<survey_sim::efficiency::rates::RateSummary>,
     /// Parallel to `rate_summaries`: (n_simulated, n_detected, effective_vt_gpc3_yr).
     per_type_extras: Vec<(usize, usize, f64)>,
     detected_sources: Vec<DetectedSourceData>,
+    undetected_sources: Vec<DetectedSourceData>,
 }
 
 /// Per-detected-source photometry and ground truth.
+#[derive(Clone)]
 struct DetectedSourceData {
     /// True model parameters.
     true_params: HashMap<String, f64>,
@@ -878,6 +936,7 @@ struct DetectedSourceData {
 /// Python-visible detected source with photometry and truth.
 #[pyclass]
 #[pyo3(name = "DetectedSource")]
+#[derive(Clone)]
 pub struct PyDetectedSource {
     data: DetectedSourceData,
 }
@@ -954,8 +1013,12 @@ pub struct PySimulationResult {
     #[pyo3(get)]
     pub n_detected: usize,
     #[pyo3(get)]
+    pub n_undetected: usize,
+    #[pyo3(get)]
     pub rate_summaries: Vec<PyRateSummary>,
     pub detected_sources: Vec<PyDetectedSource>,
+    #[pyo3(get)]
+    pub undetected_sources: Vec<PyDetectedSource>,
 }
 
 #[pymethods]
@@ -997,24 +1060,46 @@ impl PySimulationResult {
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "SimulationResult(n_simulated={}, n_detected={}, efficiency={:.4}, sources={})",
-            self.n_simulated,
-            self.n_detected,
-            self.n_detected as f64 / self.n_simulated.max(1) as f64,
-            self.detected_sources.len(),
-        )
+        if self.n_undetected > 0 || !self.undetected_sources.is_empty() {
+            format!(
+                "SimulationResult(n_simulated={}, n_detected={}, n_undetected={}, efficiency={:.4}, sources={})",
+                self.n_simulated,
+                self.n_detected,
+                self.n_undetected,
+                self.n_detected as f64 / self.n_simulated.max(1) as f64,
+                self.detected_sources.len(),
+            )
+        } else {
+            format!(
+                "SimulationResult(n_simulated={}, n_detected={}, efficiency={:.4}, sources={})",
+                self.n_simulated,
+                self.n_detected,
+                self.n_detected as f64 / self.n_simulated.max(1) as f64,
+                self.detected_sources.len(),
+            )
+        }
     }
 
     /// Multi-line summary used by `print(result)`.
     fn __str__(&self) -> String {
-        let mut s = format!(
-            "SimulationResult\n  n_simulated: {}\n  n_detected:  {}\n  efficiency:  {:.4}\n  sources:     {}\n",
-            self.n_simulated,
-            self.n_detected,
-            self.n_detected as f64 / self.n_simulated.max(1) as f64,
-            self.detected_sources.len(),
-        );
+        let mut s = if self.n_undetected > 0 || !self.undetected_sources.is_empty() {
+            format!(
+                "SimulationResult\n  n_simulated: {}\n  n_detected:  {}\n  n_undetected: {}\n  efficiency:  {:.4}\n  sources:     {}\n",
+                self.n_simulated,
+                self.n_detected,
+                self.n_undetected,
+                self.n_detected as f64 / self.n_simulated.max(1) as f64,
+                self.detected_sources.len(),
+            )
+        } else {
+            format!(
+                "SimulationResult\n  n_simulated: {}\n  n_detected:  {}\n  efficiency:  {:.4}\n  sources:     {}\n",
+                self.n_simulated,
+                self.n_detected,
+                self.n_detected as f64 / self.n_simulated.max(1) as f64,
+                self.detected_sources.len(),
+            )
+        };
         if !self.rate_summaries.is_empty() {
             s.push_str("  rate_summaries:\n");
             for rs in &self.rate_summaries {
