@@ -24,7 +24,7 @@ impl PyKilonovaPopulation {
             rate,
             z_max,
             peak_abs_mag,
-            fixed_coord: None,
+            fixed_coord,
         }
     }
 }
@@ -65,7 +65,7 @@ impl PyFixedMetzgerKilonovaPopulation {
     pub fn to_generator(&self, mjd_min: f64, mjd_max: f64) -> FixedMetzgerKilonovaPopulation {
         let mut pop = FixedMetzgerKilonovaPopulation::new(
             self.rate, self.z_max, mjd_min, mjd_max,
-            self.mej, self.vej, self.kappa
+            self.mej, self.vej, self.kappa,
         );
         if let Some((ra, dec)) = self.fixed_coord {
             pop = pop.with_fixed_coord(ra, dec);
