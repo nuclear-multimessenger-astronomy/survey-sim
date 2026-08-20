@@ -56,7 +56,7 @@ impl PyFixedMetzgerKilonovaPopulation {
     #[new]
     #[pyo3(signature = (mej, vej, kappa, rate=1000.0, z_max=0.3, fixed_coord=None))]
     fn new(mej: f64, vej: f64, kappa: f64, rate: f64, z_max: f64, fixed_coord: Option<(f64, f64)>) -> Self {
-        Self { rate, z_max, mej, vej, kappa, fixed_coord: None}
+        Self { rate, z_max, mej, vej, kappa, fixed_coord}
     }
 
 }

@@ -35,6 +35,10 @@ impl KilonovaPopulation {
             fixed_coord: None,
         }
     }
+    pub fn with_fixed_coord(mut self, ra: f64, dec: f64) -> Self {
+        self.fixed_coord = Some((ra, dec));
+        self
+    }
 }
 
 impl PopulationGenerator for KilonovaPopulation {
