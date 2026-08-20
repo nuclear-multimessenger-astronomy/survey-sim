@@ -62,29 +62,6 @@ impl PyFixedMetzgerKilonovaPopulation {
     }
 }
 
-/// Python wrapper for Bu2026KilonovaPopulation.
-#[pyclass]
-#[pyo3(name = "Bu2026KilonovaPopulation")]
-pub struct PyBu2026KilonovaPopulation {
-    pub(crate) rate: f64,
-    pub(crate) z_max: f64,
-}
-
-#[pymethods]
-impl PyBu2026KilonovaPopulation {
-    #[new]
-    #[pyo3(signature = (rate=1000.0, z_max=0.3))]
-    fn new(rate: f64, z_max: f64) -> Self {
-        Self { rate, z_max }
-    }
-}
-
-impl PyBu2026KilonovaPopulation {
-    pub fn to_generator(&self, mjd_min: f64, mjd_max: f64) -> Bu2026KilonovaPopulation {
-        Bu2026KilonovaPopulation::new(self.rate, self.z_max, mjd_min, mjd_max)
-    }
-}
-
 /// Python wrapper for FixedBu2026KilonovaPopulation.
 #[pyclass]
 #[pyo3(name = "FixedBu2026KilonovaPopulation")]
@@ -99,6 +76,8 @@ pub struct PyFixedBu2026KilonovaPopulation {
     pub(crate) ye_wind: f64,
     pub(crate) inclination_em: f64,
     pub(crate) vary_inclination: bool,
+    /// If set, place all transients at this (RA, Dec) instead of random sky.
+    pub(crate) fixed_coord: Option<(f64, f64)>,
 }
 
 #[pymethods]
@@ -110,6 +89,7 @@ impl PyFixedBu2026KilonovaPopulation {
         inclination_em=0.0,
         rate=1000.0, z_max=0.3,
         vary_inclination=false,
+        fixed_coord=None,
     ))]
     fn new(
         log10_mej_dyn: f64, v_ej_dyn: f64, ye_dyn: f64,
@@ -117,6 +97,7 @@ impl PyFixedBu2026KilonovaPopulation {
         inclination_em: f64,
         rate: f64, z_max: f64,
         vary_inclination: bool,
+        fixed_coord: Option<(f64, f64)>,
     ) -> Self {
         Self {
             rate, z_max,
@@ -124,6 +105,7 @@ impl PyFixedBu2026KilonovaPopulation {
             log10_mej_wind, v_ej_wind, ye_wind,
             inclination_em,
             vary_inclination,
+            fixed_coord,
         }
     }
 }
@@ -137,6 +119,12 @@ impl PyFixedBu2026KilonovaPopulation {
             self.inclination_em,
         );
         pop.vary_inclination = self.vary_inclination;
+        
+        // Debug 
+        if let Some((ra, dec)) = self.fixed_coord {
+            pop = pop.with_fixed_coord(ra, dec);
+        }
+        
         pop
     }
 }

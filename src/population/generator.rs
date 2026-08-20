@@ -19,6 +19,8 @@ pub struct KilonovaPopulation {
     pub mjd_max: f64,
     /// Cosmology.
     pub cosmology: Cosmology,
+    // If set, place all transients at this (RA, Dec) instead of random sky.
+    pub fixed_coord: Option<(f64, f64)>,
 }
 
 impl KilonovaPopulation {
@@ -30,6 +32,7 @@ impl KilonovaPopulation {
             mjd_min,
             mjd_max,
             cosmology: Cosmology::default(),
+            fixed_coord: None,
         }
     }
 }
@@ -41,7 +44,11 @@ impl PopulationGenerator for KilonovaPopulation {
         for _ in 0..n {
             let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
             let d_l = self.cosmology.luminosity_distance(z);
-            let (ra, dec) = sample_isotropic_sky(rng);
+            let (ra, dec) = if let Some((ra, dec)) = self.fixed_coord {
+                (ra, dec)
+            } else {
+                sample_isotropic_sky(rng)
+            };
             let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
 
             // Metzger KN model parameters: ejecta mass, velocity, opacity.
@@ -93,6 +100,8 @@ pub struct FixedMetzgerKilonovaPopulation {
     pub mej: f64,
     pub vej: f64,
     pub kappa: f64,
+    /// If set, place all transients at this (RA, Dec) instead of random sky.
+    pub fixed_coord: Option<(f64, f64)>,
 }
 
 impl FixedMetzgerKilonovaPopulation {
@@ -106,6 +115,10 @@ impl FixedMetzgerKilonovaPopulation {
             mej, vej, kappa,
         }
     }
+    pub fn with_fixed_coord(mut self, ra: f64, dec: f64) -> Self {
+        self.fixed_coord = Some((ra, dec));
+        self
+    }
 }
 
 impl PopulationGenerator for FixedMetzgerKilonovaPopulation {
@@ -115,7 +128,11 @@ impl PopulationGenerator for FixedMetzgerKilonovaPopulation {
         for _ in 0..n {
             let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
             let d_l = self.cosmology.luminosity_distance(z);
-            let (ra, dec) = sample_isotropic_sky(rng);
+            let (ra, dec) = if let Some((ra, dec)) = self.fixed_coord {
+                (ra, dec)
+            } else {
+                sample_isotropic_sky(rng)
+            };
             let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
 
             let mut params = HashMap::new();
@@ -158,6 +175,8 @@ pub struct Bu2026KilonovaPopulation {
     pub mjd_max: f64,
     /// Cosmology.
     pub cosmology: Cosmology,
+    // If set, place all transients at this (RA, Dec) instead of random sky.
+    pub fixed_coord: Option<(f64, f64)>,
 }
 
 impl Bu2026KilonovaPopulation {
@@ -168,8 +187,14 @@ impl Bu2026KilonovaPopulation {
             mjd_min,
             mjd_max,
             cosmology: Cosmology::default(),
+            fixed_coord: None,
         }
     }
+    pub fn with_fixed_coord(mut self, ra: f64, dec: f64) -> Self {
+        self.fixed_coord = Some((ra, dec));
+        self
+    }
+
 }
 
 impl PopulationGenerator for Bu2026KilonovaPopulation {
@@ -181,7 +206,11 @@ impl PopulationGenerator for Bu2026KilonovaPopulation {
         for _ in 0..n {
             let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
             let d_l = self.cosmology.luminosity_distance(z);
-            let (ra, dec) = sample_isotropic_sky(rng);
+            let (ra, dec) = if let Some((ra, dec)) = self.fixed_coord {
+                (ra, dec)
+            } else {
+                sample_isotropic_sky(rng)
+            };
             let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
 
             // Bu2026 training bounds (two-component ejecta + viewing angle).
@@ -234,6 +263,8 @@ pub struct FixedBu2026KilonovaPopulation {
     pub mjd_min: f64,
     pub mjd_max: f64,
     pub cosmology: Cosmology,
+    // If set, place all transients at this (RA, Dec) instead of random sky.
+    pub fixed_coord: Option<(f64, f64)>,
     // Fixed Bu2026 parameters.
     pub log10_mej_dyn: f64,
     pub v_ej_dyn: f64,
@@ -260,7 +291,12 @@ impl FixedBu2026KilonovaPopulation {
             log10_mej_wind, v_ej_wind, ye_wind,
             inclination_em,
             vary_inclination: false,
+            fixed_coord: None,
         }
+    }
+    pub fn with_fixed_coord(mut self, ra: f64, dec: f64) -> Self {
+        self.fixed_coord = Some((ra, dec));
+        self
     }
 }
 
@@ -273,7 +309,11 @@ impl PopulationGenerator for FixedBu2026KilonovaPopulation {
         for _ in 0..n {
             let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
             let d_l = self.cosmology.luminosity_distance(z);
-            let (ra, dec) = sample_isotropic_sky(rng);
+            let (ra, dec) = if let Some((ra, dec)) = self.fixed_coord {
+                (ra, dec)
+            } else {
+                sample_isotropic_sky(rng)
+            };
             let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
 
             // If vary_inclination, draw uniform in cos(iota): iota = arccos(U(0,1)).

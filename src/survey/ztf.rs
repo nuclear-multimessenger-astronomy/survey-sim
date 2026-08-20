@@ -27,6 +27,46 @@ impl ZtfLoader {
 
 impl SurveyLoader for ZtfLoader {
     fn load(&self) -> Result<Vec<SurveyObservation>> {
+        // --- DEBUG INJECTION START ---
+        if let Ok(cadence_val) = std::env::var("DEBUG_CADENCE") {
+            if let Ok(cadence_days) = cadence_val.parse::<f64>() {
+                let debug_mag = std::env::var("DEBUG_MAG")
+                    .unwrap_or_else(|_| "30.0".to_string())
+                    .parse::<f64>()
+                    .unwrap_or(30.0);
+
+                log::warn!("Running ZTF loader in DEBUG mode. Cadence: {} days, Mag: {}", cadence_days, debug_mag);
+
+                let mut observations = Vec::new();
+                // Ensure this MJD window overlaps with your simulated kilonova events
+                let start_mjd = 59000.0; 
+                let end_mjd = 59100.0;
+                let mut current_mjd = start_mjd;
+                let mut obs_id_counter = 0u64;
+
+                while current_mjd <= end_mjd {
+                    for band_name in &["g", "r", "i"] {
+                        observations.push(SurveyObservation {
+                            obs_id: obs_id_counter,
+                            coord: SkyCoord::new(0.0, 0.0), // Force RA/Dec to 0.0
+                            mjd: current_mjd,
+                            band: Band::new(band_name),
+                            five_sigma_depth: debug_mag,
+                            seeing_fwhm: 1.0,
+                            exposure_time: 30.0,
+                            airmass: 1.0,
+                            sky_brightness: 21.0,
+                            night: (current_mjd - start_mjd).floor() as i64,
+                        });
+                        obs_id_counter += 1;
+                    }
+                    current_mjd += cadence_days;
+                }
+                return Ok(observations);
+            }
+        }
+        // --- DEBUG INJECTION END ---
+
         let mut rdr = csv::Reader::from_path(&self.csv_path)?;
         let mut observations = Vec::new();
 
@@ -175,6 +215,46 @@ impl ZtfHdf5Loader {
 
 impl SurveyLoader for ZtfHdf5Loader {
     fn load(&self) -> Result<Vec<SurveyObservation>> {
+        
+        // --- DEBUG INJECTION START ---
+        if let Ok(cadence_val) = std::env::var("DEBUG_CADENCE") {
+            if let Ok(cadence_days) = cadence_val.parse::<f64>() {
+                let debug_mag = std::env::var("DEBUG_MAG")
+                    .unwrap_or_else(|_| "30.0".to_string())
+                    .parse::<f64>()
+                    .unwrap_or(30.0);
+
+                log::warn!("Running ZTF loader in DEBUG mode. Cadence: {} days, Mag: {}", cadence_days, debug_mag);
+
+                let mut observations = Vec::new();
+                let start_mjd = 59000.0; // Ensure your kilonova generator uses this time window
+                let end_mjd = 59100.0;
+                let mut current_mjd = start_mjd;
+                let mut obs_id_counter = 0u64;
+
+                while current_mjd <= end_mjd {
+                    for band_name in &["g", "r", "i"] {
+                        observations.push(SurveyObservation {
+                            obs_id: obs_id_counter,
+                            coord: SkyCoord::new(0.0, 0.0), // Force RA/Dec to 0.0
+                            mjd: current_mjd,
+                            band: Band::new(band_name),
+                            five_sigma_depth: debug_mag,
+                            seeing_fwhm: 1.0,
+                            exposure_time: 30.0,
+                            airmass: 1.0,
+                            sky_brightness: 21.0,
+                            night: (current_mjd - start_mjd).floor() as i64,
+                        });
+                        obs_id_counter += 1;
+                    }
+                    current_mjd += cadence_days;
+                }
+                return Ok(observations);
+            }
+        }
+        // --- DEBUG INJECTION END ---
+
         // Read HDF5 files in parallel with rayon.
         let file_results: Vec<std::result::Result<Vec<ZtfCcdObs>, String>> = self
             .h5_paths
@@ -417,6 +497,45 @@ impl ZtfBoomLoader {
 
 impl SurveyLoader for ZtfBoomLoader {
     fn load(&self) -> Result<Vec<SurveyObservation>> {
+        // --- DEBUG INJECTION START ---
+        if let Ok(cadence_val) = std::env::var("DEBUG_CADENCE") {
+            if let Ok(cadence_days) = cadence_val.parse::<f64>() {
+                let debug_mag = std::env::var("DEBUG_MAG")
+                    .unwrap_or_else(|_| "30.0".to_string())
+                    .parse::<f64>()
+                    .unwrap_or(30.0);
+
+                log::warn!("Running ZTF loader in DEBUG mode. Cadence: {} days, Mag: {}", cadence_days, debug_mag);
+
+                let mut observations = Vec::new();
+                // Ensure this MJD window overlaps with your simulated kilonova events
+                let start_mjd = 59000.0; 
+                let end_mjd = 59100.0;
+                let mut current_mjd = start_mjd;
+                let mut obs_id_counter = 0u64;
+
+                while current_mjd <= end_mjd {
+                    for band_name in &["g", "r", "i"] {
+                        observations.push(SurveyObservation {
+                            obs_id: obs_id_counter,
+                            coord: SkyCoord::new(0.0, 0.0), // Force RA/Dec to 0.0
+                            mjd: current_mjd,
+                            band: Band::new(band_name),
+                            five_sigma_depth: debug_mag,
+                            seeing_fwhm: 1.0,
+                            exposure_time: 30.0,
+                            airmass: 1.0,
+                            sky_brightness: 21.0,
+                            night: (current_mjd - start_mjd).floor() as i64,
+                        });
+                        obs_id_counter += 1;
+                    }
+                    current_mjd += cadence_days;
+                }
+                return Ok(observations);
+            }
+        }
+        // --- DEBUG INJECTION END ---
         // Try loading from cache first.
         let cache_path = Self::cache_path(&self.h5_paths);
         if let Some(ref cp) = cache_path {
