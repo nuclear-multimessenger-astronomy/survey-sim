@@ -113,6 +113,7 @@ impl FixedMetzgerKilonovaPopulation {
             rate, z_max, mjd_min, mjd_max,
             cosmology: Cosmology::default(),
             mej, vej, kappa,
+            fixed_coord: None,
         }
     }
     pub fn with_fixed_coord(mut self, ra: f64, dec: f64) -> Self {
