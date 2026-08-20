@@ -112,7 +112,6 @@ impl FixedMetzgerKilonovaPopulation {
     pub fn new(
         rate: f64, z_max: f64, mjd_min: f64, mjd_max: f64,
         mej: f64, vej: f64, kappa: f64,
-        fixed_coord: Option<(f64, f64)>,
     ) -> Self {
         Self {
             rate, z_max, mjd_min, mjd_max,

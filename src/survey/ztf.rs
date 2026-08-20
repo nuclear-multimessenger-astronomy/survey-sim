@@ -34,6 +34,15 @@ impl SurveyLoader for ZtfLoader {
                     .unwrap_or_else(|_| "30.0".to_string())
                     .parse::<f64>()
                     .unwrap_or(30.0);
+                let debug_ra = std::env::var("DEBUG_RA")
+                    .unwrap_or_else(|_| "0.0".to_string())
+                    .parse::<f64>()
+                    .unwrap_or(0.0);
+
+                let debug_dec = std::env::var("DEBUG_DEC")
+                    .unwrap_or_else(|_| "0.0".to_string())
+                    .parse::<f64>()
+                    .unwrap_or(0.0);
 
                 log::warn!("Running ZTF loader in DEBUG mode. Cadence: {} days, Mag: {}", cadence_days, debug_mag);
 
@@ -48,7 +57,7 @@ impl SurveyLoader for ZtfLoader {
                     for band_name in &["g", "r", "i"] {
                         observations.push(SurveyObservation {
                             obs_id: obs_id_counter,
-                            coord: SkyCoord::new(0.0, 0.0), // Force RA/Dec to 0.0
+                            coord: SkyCoord::new(debug_ra, debug_dec),
                             mjd: current_mjd,
                             band: Band::new(band_name),
                             five_sigma_depth: debug_mag,
@@ -223,8 +232,16 @@ impl SurveyLoader for ZtfHdf5Loader {
                     .unwrap_or_else(|_| "30.0".to_string())
                     .parse::<f64>()
                     .unwrap_or(30.0);
+                let debug_ra = std::env::var("DEBUG_RA")
+                    .unwrap_or_else(|_| "0.0".to_string())
+                    .parse::<f64>()
+                    .unwrap_or(0.0);
+                let debug_dec = std::env::var("DEBUG_DEC")
+                    .unwrap_or_else(|_| "0.0".to_string())
+                    .parse::<f64>()
+                    .unwrap_or(0.0);
 
-                log::warn!("Running ZTF loader in DEBUG mode. Cadence: {} days, Mag: {}", cadence_days, debug_mag);
+                log::warn!("Running ZTF loader in DEBUG mode. Cadence: {} days, Mag: {}, RA: {}, Dec: {}", cadence_days, debug_mag, debug_ra, debug_dec);
 
                 let mut observations = Vec::new();
                 let start_mjd = 59000.0; // Ensure your kilonova generator uses this time window
@@ -236,7 +253,7 @@ impl SurveyLoader for ZtfHdf5Loader {
                     for band_name in &["g", "r", "i"] {
                         observations.push(SurveyObservation {
                             obs_id: obs_id_counter,
-                            coord: SkyCoord::new(0.0, 0.0), // Force RA/Dec to 0.0
+                            coord: SkyCoord::new(debug_ra, debug_dec),
                             mjd: current_mjd,
                             band: Band::new(band_name),
                             five_sigma_depth: debug_mag,
@@ -504,6 +521,15 @@ impl SurveyLoader for ZtfBoomLoader {
                     .unwrap_or_else(|_| "30.0".to_string())
                     .parse::<f64>()
                     .unwrap_or(30.0);
+                let debug_ra = std::env::var("DEBUG_RA")
+                    .unwrap_or_else(|_| "0.0".to_string())
+                    .parse::<f64>()
+                    .unwrap_or(0.0);
+
+                let debug_dec = std::env::var("DEBUG_DEC")
+                    .unwrap_or_else(|_| "0.0".to_string())
+                    .parse::<f64>()
+                    .unwrap_or(0.0);
 
                 log::warn!("Running ZTF loader in DEBUG mode. Cadence: {} days, Mag: {}", cadence_days, debug_mag);
 
@@ -518,7 +544,7 @@ impl SurveyLoader for ZtfBoomLoader {
                     for band_name in &["g", "r", "i"] {
                         observations.push(SurveyObservation {
                             obs_id: obs_id_counter,
-                            coord: SkyCoord::new(0.0, 0.0), // Force RA/Dec to 0.0
+                            coord: SkyCoord::new(debug_ra, debug_dec),
                             mjd: current_mjd,
                             band: Band::new(band_name),
                             five_sigma_depth: debug_mag,
