@@ -12,24 +12,30 @@ pub struct PyKilonovaPopulation {
     pub(crate) rate: f64,
     pub(crate) z_max: f64,
     pub(crate) peak_abs_mag: f64,
+    pub(crate) fixed_coord: Option<(f64, f64)>,
 }
 
 #[pymethods]
 impl PyKilonovaPopulation {
     #[new]
-    #[pyo3(signature = (rate=1000.0, z_max=0.3, peak_abs_mag=-16.0))]
-    fn new(rate: f64, z_max: f64, peak_abs_mag: f64) -> Self {
+    #[pyo3(signature = (rate=1000.0, z_max=0.3, peak_abs_mag=-16.0, fixed_coord=None))]
+    fn new(rate: f64, z_max: f64, peak_abs_mag: f64, fixed_coord: Option<(f64, f64)>) -> Self {
         Self {
             rate,
             z_max,
             peak_abs_mag,
+            fixed_coord: None,
         }
     }
 }
 
 impl PyKilonovaPopulation {
     pub fn to_generator(&self, mjd_min: f64, mjd_max: f64) -> KilonovaPopulation {
-        KilonovaPopulation::new(self.rate, self.z_max, self.peak_abs_mag, mjd_min, mjd_max)
+        let mut pop = KilonovaPopulation::new(self.rate, self.z_max, self.peak_abs_mag, mjd_min, mjd_max);
+        if let Some((ra, dec)) = self.fixed_coord {
+            pop = pop.with_fixed_coord(ra, dec);
+        }
+        pop
     }
 }
 
@@ -42,23 +48,57 @@ pub struct PyFixedMetzgerKilonovaPopulation {
     pub(crate) mej: f64,
     pub(crate) vej: f64,
     pub(crate) kappa: f64,
+    pub(crate) fixed_coord: Option<(f64, f64)>,
 }
 
 #[pymethods]
 impl PyFixedMetzgerKilonovaPopulation {
     #[new]
-    #[pyo3(signature = (mej, vej, kappa, rate=1000.0, z_max=0.3))]
-    fn new(mej: f64, vej: f64, kappa: f64, rate: f64, z_max: f64) -> Self {
-        Self { rate, z_max, mej, vej, kappa }
+    #[pyo3(signature = (mej, vej, kappa, rate=1000.0, z_max=0.3, fixed_coord=None))]
+    fn new(mej: f64, vej: f64, kappa: f64, rate: f64, z_max: f64, fixed_coord: Option<(f64, f64)>) -> Self {
+        Self { rate, z_max, mej, vej, kappa, fixed_coord: None}
     }
+
 }
 
 impl PyFixedMetzgerKilonovaPopulation {
     pub fn to_generator(&self, mjd_min: f64, mjd_max: f64) -> FixedMetzgerKilonovaPopulation {
-        FixedMetzgerKilonovaPopulation::new(
+        let mut pop = FixedMetzgerKilonovaPopulation::new(
             self.rate, self.z_max, mjd_min, mjd_max,
-            self.mej, self.vej, self.kappa,
-        )
+            self.mej, self.vej, self.kappa
+        );
+        if let Some((ra, dec)) = self.fixed_coord {
+            pop = pop.with_fixed_coord(ra, dec);
+        }
+        pop
+    }
+}
+
+/// Python wrapper for Bu2026KilonovaPopulation.
+#[pyclass]
+#[pyo3(name = "Bu2026KilonovaPopulation")]
+pub struct PyBu2026KilonovaPopulation {
+    pub(crate) rate: f64,
+    pub(crate) z_max: f64,
+    pub(crate) fixed_coord: Option<(f64, f64)>,
+}
+
+#[pymethods]
+impl PyBu2026KilonovaPopulation {
+    #[new]
+    #[pyo3(signature = (rate=1000.0, z_max=0.3, fixed_coord=None))]
+    fn new(rate: f64, z_max: f64, fixed_coord: Option<(f64, f64)>) -> Self {
+        Self { rate, z_max, fixed_coord }
+    }
+}
+
+impl PyBu2026KilonovaPopulation {
+    pub fn to_generator(&self, mjd_min: f64, mjd_max: f64) -> Bu2026KilonovaPopulation {
+        let mut pop = Bu2026KilonovaPopulation::new(self.rate, self.z_max, mjd_min, mjd_max);
+        if let Some((ra, dec)) = self.fixed_coord {
+            pop = pop.with_fixed_coord(ra, dec);
+        }
+        pop
     }
 }
 
