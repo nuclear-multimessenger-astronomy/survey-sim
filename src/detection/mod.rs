@@ -42,6 +42,9 @@ pub struct DetectionCriteria {
     pub min_per_band: usize,
     /// Maximum timespan in days for required detections.
     pub max_timespan_days: f64,
+    /// Optional sliding window in days to select the best contiguous subset of detections.
+    #[serde(default)]
+    pub rolling_window_days: Option<f64>,
     /// Primary SNR threshold (default 5.0, matching five_sigma_depth).
     /// At least `min_detections_primary` observations must exceed this.
     pub snr_threshold: f64,
@@ -117,6 +120,7 @@ impl Default for DetectionCriteria {
             min_bands: 1,
             min_per_band: 1,
             max_timespan_days: 30.0,
+            rolling_window_days: None,
             snr_threshold: 5.0,
             snr_threshold_secondary: 5.0,
             min_detections_primary: 1,
@@ -150,6 +154,7 @@ impl DetectionCriteria {
             min_bands: 1,
             min_per_band: 1,
             max_timespan_days: 14.0,
+            rolling_window_days: None,
             snr_threshold: 5.0,
             snr_threshold_secondary: 3.0,
             min_detections_primary: 1,
@@ -400,6 +405,9 @@ pub fn evaluate_detection_with_t0(
             // Group observations by (band, time_bin).
             let mut bins: HashMap<(String, i64), Vec<(usize, f64, f64)>> = HashMap::new();
             for (i, obs) in observations.iter().enumerate() {
+                if let Some(t0) = explosion_mjd {
+                    if obs.mjd < t0 { continue; }
+                }
                 let band_name = obs.band.0.clone();
                 let time_bin = (obs.mjd / window_days).floor() as i64;
                 if let Some(mags) = evaluation.apparent_mags.get(&band_name) {
@@ -479,6 +487,9 @@ pub fn evaluate_detection_with_t0(
     // ── Per-observation (raw/pre-stacked) detection ──
     // Match each observation to the corresponding magnitude.
     for (i, obs) in observations.iter().enumerate() {
+        if let Some(t0) = explosion_mjd {
+            if obs.mjd < t0 { continue; }
+        }
         let band_name = &obs.band.0;
 
         // Look up the apparent magnitude for this band at this time index.
@@ -510,6 +521,43 @@ pub fn evaluate_detection_with_t0(
         }
     }
 
+    // Optional rolling window selection: if `rolling_window_days` is set, restrict
+    // the detected observations to the best contiguous sub-window of width `rw_days`.
+    if let Some(rw_days) = criteria.rolling_window_days {
+        if rw_days > 0.0 && detection_mjds.len() > 1 {
+            let mut all_det: Vec<(f64, String, f64, f64, bool)> = Vec::new();
+            for (band, pts) in &band_photometry {
+                for &(mjd, mag, err) in pts {
+                    let is_prim = err <= 1.0857 / criteria.snr_threshold + 1e-6;
+                    all_det.push((mjd, band.clone(), mag, err, is_prim));
+                }
+            }
+            all_det.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            let mut best_slice = &all_det[..];
+            let mut best_len = 0usize;
+            for i in 0..all_det.len() {
+                let t_end = all_det[i].0 + rw_days;
+                let j = all_det[i..].partition_point(|p| p.0 <= t_end) + i;
+                if j - i > best_len {
+                    best_len = j - i;
+                    best_slice = &all_det[i..j];
+                }
+            }
+            n_detections = best_slice.len();
+            n_detections_primary = best_slice.iter().filter(|p| p.4).count();
+            bands_detected.clear();
+            detections_per_band.clear();
+            detection_mjds.clear();
+            band_photometry.clear();
+            for (mjd, band, mag, err, _) in best_slice {
+                bands_detected.insert(band.clone());
+                *detections_per_band.entry(band.clone()).or_insert(0) += 1;
+                detection_mjds.push(*mjd);
+                band_photometry.entry(band.clone()).or_default().push((*mjd, *mag, *err));
+            }
+        }
+    }
+
     let first_detection_mjd = detection_mjds.iter().copied().reduce(f64::min);
     let last_detection_mjd = detection_mjds.iter().copied().reduce(f64::max);
 
@@ -520,6 +568,9 @@ pub fn evaluate_detection_with_t0(
     let mut detected_phot: Vec<(f64, f64)> = Vec::new();
 
     for (i, obs) in observations.iter().enumerate() {
+        if let Some(t0) = explosion_mjd {
+            if obs.mjd < t0 { continue; }
+        }
         let band_name = &obs.band.0;
         if let Some(mags) = evaluation.apparent_mags.get(band_name) {
             if i < mags.len() {
