@@ -44,7 +44,7 @@ class FiestaAfterglowModel:
     }
 
     def __init__(self, name="blastwave_gaussian_CVAE", band_map=None,
-                 eta=ETA_GAMMA, default_duration=4.0):
+                 eta=ETA_GAMMA, default_duration=4.0, max_phase_days=100.0):
         if band_map is None:
             band_map = ZTF_BAND_MAP
         self.band_map = band_map
@@ -54,6 +54,7 @@ class FiestaAfterglowModel:
         self.model = FluxModel(name, filters=fiesta_filters)
         self.eta = eta
         self.default_duration = default_duration
+        self.max_phase_days = float(max_phase_days)
         self.has_rs = "log10_RB" in self.model.parameter_names
 
         # Store parameter bounds for vectorized clamping.
@@ -178,12 +179,15 @@ class FiestaAfterglowModel:
         model_times, model_mags = self.model.predict(fiesta_params)
         model_times = np.asarray(model_times, dtype=np.float64)
 
+        t_upper = min(self.max_phase_days, float(model_times[-1]))
+        out_of_bounds = (obs_rest_days <= 0.0) | (obs_rest_days > t_upper)
         result_mags = {}
         for fiesta_filt, short_band in self.reverse_map.items():
             if fiesta_filt not in model_mags:
                 continue
             grid_mags = np.asarray(model_mags[fiesta_filt], dtype=np.float64)
-            result_mags[short_band] = np.interp(obs_rest_days, model_times, grid_mags).tolist()
+            interp_mags = np.interp(obs_rest_days, model_times, grid_mags, left=99.0, right=99.0)
+            result_mags[short_band] = np.where(out_of_bounds, 99.0, interp_mags).tolist()
 
         for band in set(params["_obs_bands"]):
             if band not in result_mags:
@@ -267,11 +271,13 @@ class FiestaAfterglowModel:
         # model_times_batch[i] is the time grid for transient i.
         # Use trans_idx to gather the right grid row.
 
-        # Clamp obs times to grid range.
+        # Clamp obs times to grid range, masking out-of-bounds phases to 99.0.
         t_min_per_obs = model_times_batch[trans_idx, 0]
         t_max_per_obs = model_times_batch[trans_idx, -1]
+        t_upper_per_obs = np.minimum(t_max_per_obs, self.max_phase_days)
+        out_of_bounds_flat = (obs_rest_flat <= 0.0) | (obs_rest_flat > t_upper_per_obs)
         obs_clamped = np.clip(obs_rest_flat, t_min_per_obs, t_max_per_obs)
-        del t_min_per_obs, t_max_per_obs
+        del t_min_per_obs, t_max_per_obs, t_upper_per_obs
 
         # Searchsorted per-transient to find interpolation index.
         idx = np.empty(total_obs, dtype=np.int64)
@@ -299,7 +305,8 @@ class FiestaAfterglowModel:
             grid_mags = model_mags_np[fiesta_filt]  # (N, T)
             m0 = grid_mags[trans_idx, idx]
             m1 = grid_mags[trans_idx, idx1]
-            result_mags[short_band] = (m0 + w * (m1 - m0)).tolist()
+            interp_mags = np.where(out_of_bounds_flat, 99.0, m0 + w * (m1 - m0))
+            result_mags[short_band] = interp_mags.tolist()
 
         # Fill missing bands with 99.
         all_bands = set(obs_bands_flat)
@@ -347,6 +354,12 @@ class FiestaAfterglowModel:
 
         t_min = model_times_batch[:, 0:1]
         t_max = model_times_batch[:, -1:]
+        t_upper = np.minimum(t_max, self.max_phase_days)
+        out_of_bounds = (
+            np.isnan(obs_rest_padded)
+            | (obs_rest_padded <= 0.0)
+            | (obs_rest_padded > t_upper)
+        )
         obs_clamped = np.clip(obs_rest_padded, t_min, t_max)
 
         idx = np.empty((N, max_obs), dtype=np.int64)
@@ -365,7 +378,7 @@ class FiestaAfterglowModel:
             grid_mags = model_mags_np[fiesta_filt]
             m0 = np.take_along_axis(grid_mags, idx, axis=1)
             m1 = np.take_along_axis(grid_mags, np.minimum(idx + 1, T - 1), axis=1)
-            interp_results[short_band] = m0 + w * (m1 - m0)
+            interp_results[short_band] = np.where(out_of_bounds, 99.0, m0 + w * (m1 - m0))
 
         results = []
         for i in range(N):

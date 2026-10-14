@@ -65,6 +65,8 @@ pub struct ParametricModel {
     pub model_override: Option<SviModelName>,
     /// Per-band color offsets relative to the reference band (magnitudes).
     pub color_offsets: HashMap<String, f64>,
+    /// Optional override for maximum rest-frame phase (days) before clamping to 99.0 mag.
+    pub max_phase_days: Option<f64>,
 }
 
 impl ParametricModel {
@@ -72,6 +74,7 @@ impl ParametricModel {
         Self {
             model_override: None,
             color_offsets: HashMap::new(),
+            max_phase_days: None,
         }
     }
 
@@ -83,6 +86,26 @@ impl ParametricModel {
     pub fn with_color_offset(mut self, band: &str, offset: f64) -> Self {
         self.color_offsets.insert(band.to_string(), offset);
         self
+    }
+
+    pub fn with_max_phase(mut self, max_phase_days: f64) -> Self {
+        self.max_phase_days = Some(max_phase_days);
+        self
+    }
+
+    pub fn default_max_phase_for_model(model: SviModelName) -> f64 {
+        match model {
+            SviModelName::MetzgerKN => 25.0,
+            SviModelName::Tde => 365.0,
+            SviModelName::Afterglow => 100.0,
+            SviModelName::Bazin | SviModelName::Villar | SviModelName::Arnett => 90.0,
+            SviModelName::Magnetar | SviModelName::ShockCooling => 60.0,
+        }
+    }
+
+    pub fn resolved_max_phase(&self, model: SviModelName) -> f64 {
+        self.max_phase_days
+            .unwrap_or_else(|| Self::default_max_phase_for_model(model))
     }
 }
 
@@ -102,6 +125,11 @@ impl LightcurveModel for ParametricModel {
         let model = self
             .model_override
             .unwrap_or_else(|| default_model_for_type(instance.transient_type));
+        let max_phase = instance
+            .model_params
+            .get("max_phase_days")
+            .copied()
+            .unwrap_or_else(|| self.resolved_max_phase(model));
 
         // Convert observer-frame MJD to rest-frame days since explosion.
         let rest_times: Vec<f64> = times_mjd
@@ -113,7 +141,7 @@ impl LightcurveModel for ParametricModel {
         let params = extract_model_params(instance, model);
 
         if model == SviModelName::MetzgerKN {
-            return self.evaluate_metzger(instance, times_mjd, bands, &rest_times, &params);
+            return self.evaluate_metzger(instance, times_mjd, bands, &rest_times, &params, max_phase);
         }
 
         // --- Generic path for all other models ---
@@ -135,8 +163,9 @@ impl LightcurveModel for ParametricModel {
 
             let mags: Vec<f64> = norm_flux
                 .iter()
-                .map(|&f| {
-                    if f <= 0.0 {
+                .zip(rest_times.iter())
+                .map(|(&f, &t_rest)| {
+                    if t_rest < 0.0 || t_rest > max_phase || f <= 0.0 {
                         return 99.0;
                     }
                     let abs_mag = instance.peak_abs_mag - 2.5 * f.log10();
@@ -152,6 +181,11 @@ impl LightcurveModel for ParametricModel {
             times_mjd: times_mjd.to_vec(),
         })
     }
+
+    fn max_phase_days(&self) -> f64 {
+        let model = self.model_override.unwrap_or(SviModelName::MetzgerKN);
+        self.resolved_max_phase(model)
+    }
 }
 
 impl ParametricModel {
@@ -163,6 +197,7 @@ impl ParametricModel {
         bands: &[Band],
         rest_times: &[f64],
         params: &[f64],
+        max_phase: f64,
     ) -> Result<LightcurveEvaluation> {
         // Build (band_name, frequency_Hz) pairs for unique bands.
         // Frequency in host frame: ν_host = ν_obs * (1 + z)
@@ -197,7 +232,14 @@ impl ParametricModel {
                 let host_ext = extinction_in_band(instance.host_extinction_av, band_name);
                 let mags: Vec<f64> = raw_mags
                     .iter()
-                    .map(|&m| if m < 90.0 { m + mw_ext + host_ext } else { m })
+                    .zip(rest_times.iter())
+                    .map(|(&m, &t_rest)| {
+                        if t_rest < 0.0 || t_rest > max_phase || m >= 90.0 {
+                            99.0
+                        } else {
+                            m + mw_ext + host_ext
+                        }
+                    })
                     .collect();
                 apparent_mags.insert(band_name.clone(), mags);
             } else {

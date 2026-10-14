@@ -53,6 +53,12 @@ pub trait LightcurveModel: Send + Sync {
         false
     }
 
+    /// Maximum rest-frame phase (in days since explosion) over which the model
+    /// is valid and evaluated by the pipeline. Defaults to 100.0 days.
+    fn max_phase_days(&self) -> f64 {
+        100.0
+    }
+
     /// Evaluate multiple transients in a single batch call.
     ///
     /// Default implementation falls back to sequential `evaluate()` calls.
