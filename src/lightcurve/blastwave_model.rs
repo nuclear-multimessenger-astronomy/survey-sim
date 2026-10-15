@@ -280,6 +280,9 @@ impl LightcurveModel for BlastwaveModel {
             afterglow.config_rs_parameters(rs_ag_params);
         }
 
+        let flux_factor = (1.0 + z) / (4.0 * std::f64::consts::PI * d_cm * d_cm);
+        let max_phase = self.max_phase_days_for_instance(instance);
+
         // Collect all observations with time since explosion.
         let mut obs_with_ts: Vec<(usize, String, f64, f64)> = Vec::new(); // (idx, band, t_mjd, t_s)
         let mut results: Vec<(usize, String, f64, f64)> = Vec::with_capacity(times_mjd.len());
@@ -292,14 +295,12 @@ impl LightcurveModel for BlastwaveModel {
             let dt_days = t_mjd - instance.t_exp;
             let t_rest_days = dt_days / (1.0 + z);
             let t_s = dt_days * SECONDS_PER_DAY;
-            if t_s <= 0.0 || t_rest_days > self.max_phase_days {
+            if t_s <= 0.0 || t_rest_days > max_phase {
                 results.push((i, band_name, 99.0, t_mjd));
             } else {
                 obs_with_ts.push((i, band_name, t_mjd, t_s));
             }
         }
-
-        let flux_factor = (1.0 + z) / (4.0 * std::f64::consts::PI * d_cm * d_cm);
 
         // EATS evaluation: compute luminosity at each observation time.
         // For efficiency with many observations (e.g., raw 1-sec cadence),

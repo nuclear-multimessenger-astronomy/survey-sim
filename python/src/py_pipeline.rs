@@ -338,7 +338,8 @@ fn run_pipeline_borrowed(
             None => continue,
         };
 
-        let time_window = time_window_days.unwrap_or_else(|| model.max_phase_days());
+        let pop_type = pop.transient_type();
+        let default_window = time_window_days.unwrap_or_else(|| model.max_phase_days_for_type(pop_type));
         let t_phase1 = Instant::now();
 
         // Phase 1: Spatial matching (parallel).
@@ -346,6 +347,11 @@ fn run_pipeline_borrowed(
             .par_iter()
             .enumerate()
             .map(|(i, inst)| {
+                let time_window = if time_window_days.is_some() {
+                    default_window
+                } else {
+                    model.max_phase_days_for_instance(inst)
+                };
                 // Look back 30 days before explosion for non-detection upper limits
                 let mjd_min = inst.t_exp - 30.0;
                 let mjd_max = inst.t_exp + time_window * (1.0 + inst.z);

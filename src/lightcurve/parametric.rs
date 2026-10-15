@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use lightcurve_fitting::SviModelName;
 
-use crate::types::{Band, TransientInstance};
+use crate::types::{Band, TransientInstance, TransientType};
 
 use super::cosmology::{extinction_in_band, k_correction_bolometric};
 use super::{LightcurveEvaluation, LightcurveModel, Result};
@@ -103,9 +103,20 @@ impl ParametricModel {
         }
     }
 
+    pub fn default_max_phase_for_type(transient_type: TransientType) -> f64 {
+        Self::default_max_phase_for_model(default_model_for_type(transient_type))
+    }
+
     pub fn resolved_max_phase(&self, model: SviModelName) -> f64 {
         self.max_phase_days
             .unwrap_or_else(|| Self::default_max_phase_for_model(model))
+    }
+
+    pub fn resolved_max_phase_for_type(&self, transient_type: TransientType) -> f64 {
+        let model = self
+            .model_override
+            .unwrap_or_else(|| default_model_for_type(transient_type));
+        self.resolved_max_phase(model)
     }
 }
 
@@ -125,11 +136,7 @@ impl LightcurveModel for ParametricModel {
         let model = self
             .model_override
             .unwrap_or_else(|| default_model_for_type(instance.transient_type));
-        let max_phase = instance
-            .model_params
-            .get("max_phase_days")
-            .copied()
-            .unwrap_or_else(|| self.resolved_max_phase(model));
+        let max_phase = self.max_phase_days_for_instance(instance);
 
         // Convert observer-frame MJD to rest-frame days since explosion.
         let rest_times: Vec<f64> = times_mjd
@@ -183,8 +190,17 @@ impl LightcurveModel for ParametricModel {
     }
 
     fn max_phase_days(&self) -> f64 {
-        let model = self.model_override.unwrap_or(SviModelName::MetzgerKN);
-        self.resolved_max_phase(model)
+        if let Some(mp) = self.max_phase_days {
+            mp
+        } else if let Some(model) = self.model_override {
+            Self::default_max_phase_for_model(model)
+        } else {
+            100.0
+        }
+    }
+
+    fn max_phase_days_for_type(&self, transient_type: TransientType) -> f64 {
+        self.resolved_max_phase_for_type(transient_type)
     }
 }
 
@@ -352,5 +368,57 @@ fn extract_model_params(instance: &TransientInstance, model: SviModelName) -> Ve
                 get("c", 0.0),
             ]
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{SkyCoord, TransientType};
+
+    #[test]
+    fn test_parametric_max_phase_resolution() {
+        let model = ParametricModel::new();
+
+        // Check fallback when no type or override is provided
+        assert_eq!(model.max_phase_days(), 100.0);
+
+        // Check type-based resolution
+        assert_eq!(model.max_phase_days_for_type(TransientType::Kilonova), 25.0);
+        assert_eq!(model.max_phase_days_for_type(TransientType::Tde), 365.0);
+        assert_eq!(model.max_phase_days_for_type(TransientType::SupernovaIa), 90.0);
+        assert_eq!(model.max_phase_days_for_type(TransientType::SupernovaII), 90.0);
+        assert_eq!(model.max_phase_days_for_type(TransientType::Afterglow), 100.0);
+        assert_eq!(model.max_phase_days_for_type(TransientType::Fbot), 90.0);
+
+        // Check model override
+        let kn_override = ParametricModel::new().with_model(SviModelName::MetzgerKN);
+        assert_eq!(kn_override.max_phase_days(), 25.0);
+        assert_eq!(kn_override.max_phase_days_for_type(TransientType::Tde), 25.0);
+
+        // Check explicit max_phase_days override
+        let explicit = ParametricModel::new().with_max_phase(45.0);
+        assert_eq!(explicit.max_phase_days(), 45.0);
+        assert_eq!(explicit.max_phase_days_for_type(TransientType::Tde), 45.0);
+
+        // Check instance with and without custom max_phase_days parameter
+        let mut inst = TransientInstance {
+            coord: SkyCoord { ra: 0.0, dec: 0.0 },
+            z: 0.01,
+            d_l: 40.0,
+            t_exp: 60000.0,
+            peak_abs_mag: -16.0,
+            transient_type: TransientType::Tde,
+            model_params: HashMap::new(),
+            mw_extinction_av: 0.0,
+            host_extinction_av: 0.0,
+        };
+
+        // Without parameter: uses transient_type (TDE -> 365.0)
+        assert_eq!(model.max_phase_days_for_instance(&inst), 365.0);
+
+        // With parameter in model_params
+        inst.model_params.insert("max_phase_days".to_string(), 123.0);
+        assert_eq!(model.max_phase_days_for_instance(&inst), 123.0);
     }
 }
