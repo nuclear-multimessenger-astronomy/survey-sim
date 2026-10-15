@@ -89,11 +89,12 @@ impl PyDetectionCriteria {
 
     fn __repr__(&self) -> String {
         format!(
-            "DetectionCriteria(min_detections={}, min_bands={}, min_per_band={}, max_timespan_days={}, snr_threshold={})",
+            "DetectionCriteria(min_detections={}, min_bands={}, min_per_band={}, max_timespan_days={}, rolling_window_days={:?}, snr_threshold={})",
             self.inner.min_detections,
             self.inner.min_bands,
             self.inner.min_per_band,
             self.inner.max_timespan_days,
+            self.inner.rolling_window_days,
             self.inner.snr_threshold,
         )
     }
