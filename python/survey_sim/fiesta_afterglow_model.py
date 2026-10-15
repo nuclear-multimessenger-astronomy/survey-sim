@@ -180,7 +180,8 @@ class FiestaAfterglowModel:
         model_times = np.asarray(model_times, dtype=np.float64)
 
         t_upper = min(self.max_phase_days, float(model_times[-1]))
-        out_of_bounds = (obs_rest_days <= 0.0) | (obs_rest_days > t_upper)
+        t_lower = max(0.0, float(model_times[0]))
+        out_of_bounds = (obs_rest_days < t_lower) | (obs_rest_days > t_upper)
         result_mags = {}
         for fiesta_filt, short_band in self.reverse_map.items():
             if fiesta_filt not in model_mags:
@@ -275,9 +276,10 @@ class FiestaAfterglowModel:
         t_min_per_obs = model_times_batch[trans_idx, 0]
         t_max_per_obs = model_times_batch[trans_idx, -1]
         t_upper_per_obs = np.minimum(t_max_per_obs, self.max_phase_days)
-        out_of_bounds_flat = (obs_rest_flat <= 0.0) | (obs_rest_flat > t_upper_per_obs)
+        t_lower_per_obs = np.maximum(0.0, t_min_per_obs)
+        out_of_bounds_flat = (obs_rest_flat < t_lower_per_obs) | (obs_rest_flat > t_upper_per_obs)
         obs_clamped = np.clip(obs_rest_flat, t_min_per_obs, t_max_per_obs)
-        del t_min_per_obs, t_max_per_obs, t_upper_per_obs
+        del t_min_per_obs, t_max_per_obs, t_upper_per_obs, t_lower_per_obs
 
         # Searchsorted per-transient to find interpolation index.
         idx = np.empty(total_obs, dtype=np.int64)
@@ -355,9 +357,10 @@ class FiestaAfterglowModel:
         t_min = model_times_batch[:, 0:1]
         t_max = model_times_batch[:, -1:]
         t_upper = np.minimum(t_max, self.max_phase_days)
+        t_lower = np.maximum(0.0, t_min)
         out_of_bounds = (
             np.isnan(obs_rest_padded)
-            | (obs_rest_padded <= 0.0)
+            | (obs_rest_padded < t_lower)
             | (obs_rest_padded > t_upper)
         )
         obs_clamped = np.clip(obs_rest_padded, t_min, t_max)
