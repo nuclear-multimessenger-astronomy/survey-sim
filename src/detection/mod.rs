@@ -372,15 +372,7 @@ pub fn evaluate_detection_with_t0(
     criteria: &DetectionCriteria,
     explosion_mjd: Option<f64>,
 ) -> DetectionResult {
-    let mut n_detections = 0usize;
-    let mut n_detections_primary = 0usize;
-    let mut bands_detected = HashSet::new();
-    let mut detections_per_band: HashMap<String, usize> = HashMap::new();
-    let mut detection_mjds = Vec::new();
-
-    // Collect per-band detected photometry for rate computation.
-    // Each entry: (time, mag, mag_err) sorted by time within band.
-    let mut band_photometry: HashMap<String, Vec<(f64, f64, f64)>> = HashMap::new();
+    let mut all_detections: Vec<DetectionPoint> = Vec::new();
 
     // Compute the secondary depth threshold. The five_sigma_depth corresponds to
     // SNR=5. For a different SNR threshold, depth_eff = depth + 2.5*log10(5/snr).
@@ -406,7 +398,9 @@ pub fn evaluate_detection_with_t0(
             let mut bins: HashMap<(String, i64), Vec<(usize, f64, f64)>> = HashMap::new();
             for (i, obs) in observations.iter().enumerate() {
                 if let Some(t0) = explosion_mjd {
-                    if obs.mjd < t0 { continue; }
+                    if obs.mjd < t0 {
+                        continue;
+                    }
                 }
                 let band_name = obs.band.0.clone();
                 let time_bin = (obs.mjd / window_days).floor() as i64;
@@ -450,7 +444,7 @@ pub fn evaluate_detection_with_t0(
                 // Stacked depth: median single-frame depth + 2.5*log10(sqrt(N))
                 // matching Freeburn's redback fork (line 1137).
                 let mut depths: Vec<f64> = entries.iter().map(|e| e.2).collect();
-                depths.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                depths.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 let median_depth = depths[depths.len() / 2];
                 let n = entries.len();
                 // sqrt(N) scaling matching Freeburn's redback fork.
@@ -460,25 +454,26 @@ pub fn evaluate_detection_with_t0(
                 let depth_secondary = stacked_depth + secondary_depth_boost;
 
                 if stacked_mag < depth_secondary {
-                    n_detections += 1;
-                    bands_detected.insert(band_name.clone());
-                    *detections_per_band.entry(band_name.clone()).or_insert(0) += 1;
-
                     // Use midpoint MJD for the stacked detection.
-                    let mjd_min = entries.iter().map(|e| observations[e.0].mjd).fold(f64::INFINITY, f64::min);
-                    let mjd_max = entries.iter().map(|e| observations[e.0].mjd).fold(f64::NEG_INFINITY, f64::max);
+                    let mjd_min = entries
+                        .iter()
+                        .map(|e| observations[e.0].mjd)
+                        .fold(f64::INFINITY, f64::min);
+                    let mjd_max = entries
+                        .iter()
+                        .map(|e| observations[e.0].mjd)
+                        .fold(f64::NEG_INFINITY, f64::max);
                     let mjd_mid = 0.5 * (mjd_min + mjd_max);
-                    detection_mjds.push(mjd_mid);
-
-                    if stacked_mag < stacked_depth {
-                        n_detections_primary += 1;
-                    }
-
+                    let is_primary = stacked_mag < stacked_depth;
                     let mag_err = mag_error_from_depth(stacked_mag, stacked_depth);
-                    band_photometry
-                        .entry(band_name.clone())
-                        .or_default()
-                        .push((mjd_mid, stacked_mag, mag_err));
+
+                    all_detections.push(DetectionPoint {
+                        mjd: mjd_mid,
+                        band: band_name.clone(),
+                        mag: stacked_mag,
+                        mag_err,
+                        is_primary,
+                    });
                 }
             }
         }
@@ -488,7 +483,9 @@ pub fn evaluate_detection_with_t0(
     // Match each observation to the corresponding magnitude.
     for (i, obs) in observations.iter().enumerate() {
         if let Some(t0) = explosion_mjd {
-            if obs.mjd < t0 { continue; }
+            if obs.mjd < t0 {
+                continue;
+            }
         }
         let band_name = &obs.band.0;
 
@@ -500,116 +497,154 @@ pub fn evaluate_detection_with_t0(
 
                 // Two-tier detection: check against secondary (looser) threshold first.
                 if app_mag < depth_secondary {
-                    n_detections += 1;
-                    bands_detected.insert(band_name.clone());
-                    *detections_per_band.entry(band_name.clone()).or_insert(0) += 1;
-                    detection_mjds.push(obs.mjd);
-
                     // Also check primary (stricter) threshold.
-                    if app_mag < obs.five_sigma_depth {
-                        n_detections_primary += 1;
-                    }
+                    let is_primary = app_mag < obs.five_sigma_depth;
 
-                    // Store detected photometry for rate computation.
+                    // Store detected photometry for candidate window evaluation.
                     let mag_err = mag_error_from_depth(app_mag, obs.five_sigma_depth);
-                    band_photometry
-                        .entry(band_name.clone())
-                        .or_default()
-                        .push((obs.mjd, app_mag, mag_err));
+
+                    all_detections.push(DetectionPoint {
+                        mjd: obs.mjd,
+                        band: band_name.clone(),
+                        mag: app_mag,
+                        mag_err,
+                        is_primary,
+                    });
                 }
             }
         }
     }
 
-    // Optional rolling window selection: if `rolling_window_days` is set, restrict
-    // the detected observations to the best contiguous sub-window of width `rw_days`.
+    if all_detections.is_empty() {
+        return DetectionResult {
+            detected: false,
+            n_detections: 0,
+            n_detections_primary: 0,
+            n_bands_detected: 0,
+            first_detection_mjd: None,
+            last_detection_mjd: None,
+            detections_per_band: HashMap::new(),
+            best_rise_rate: None,
+            best_fade_rate: None,
+            is_fast_transient: false,
+            peak_mjd: None,
+            peak_mag: None,
+            n_pre_peak: 0,
+            n_post_peak: 0,
+            phase_min_days: None,
+            phase_max_days: None,
+        };
+    }
+
+    all_detections.sort_by(|a, b| a.mjd.partial_cmp(&b.mjd).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Optional rolling window selection: if `rolling_window_days` is set, evaluate
+    // candidate contiguous sub-windows of width `rw_days` and select the best one.
     if let Some(rw_days) = criteria.rolling_window_days {
-        if rw_days > 0.0 && detection_mjds.len() > 1 {
-            let mut all_det: Vec<(f64, String, f64, f64, bool)> = Vec::new();
-            for (band, pts) in &band_photometry {
-                for &(mjd, mag, err) in pts {
-                    let is_prim = err <= 1.0857 / criteria.snr_threshold + 1e-6;
-                    all_det.push((mjd, band.clone(), mag, err, is_prim));
+        if rw_days > 0.0 && all_detections.len() > 1 {
+            let mut best_result: Option<DetectionResult> = None;
+            for i in 0..all_detections.len() {
+                let t_end = all_detections[i].mjd + rw_days + 1e-7;
+                let j = all_detections[i..].partition_point(|p| p.mjd <= t_end) + i;
+                let cand = evaluate_detection_slice(&all_detections[i..j], criteria, explosion_mjd);
+                match &best_result {
+                    Some(curr) => {
+                        if is_better_result(&cand, curr) {
+                            best_result = Some(cand);
+                        }
+                    }
+                    None => {
+                        best_result = Some(cand);
+                    }
                 }
             }
-            all_det.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-            let mut best_slice = &all_det[..];
-            let mut best_len = 0usize;
-            for i in 0..all_det.len() {
-                let t_end = all_det[i].0 + rw_days;
-                let j = all_det[i..].partition_point(|p| p.0 <= t_end) + i;
-                if j - i > best_len {
-                    best_len = j - i;
-                    best_slice = &all_det[i..j];
-                }
-            }
-            n_detections = best_slice.len();
-            n_detections_primary = best_slice.iter().filter(|p| p.4).count();
-            bands_detected.clear();
-            detections_per_band.clear();
-            detection_mjds.clear();
-            band_photometry.clear();
-            for (mjd, band, mag, err, _) in best_slice {
-                bands_detected.insert(band.clone());
-                *detections_per_band.entry(band.clone()).or_insert(0) += 1;
-                detection_mjds.push(*mjd);
-                band_photometry.entry(band.clone()).or_default().push((*mjd, *mag, *err));
-            }
+            return best_result.unwrap();
         }
     }
 
-    let first_detection_mjd = detection_mjds.iter().copied().reduce(f64::min);
-    let last_detection_mjd = detection_mjds.iter().copied().reduce(f64::max);
+    evaluate_detection_slice(&all_detections, criteria, explosion_mjd)
+}
 
-    // Find peak (brightest detection) across all bands.
+#[derive(Clone, Debug)]
+struct DetectionPoint {
+    mjd: f64,
+    band: String,
+    mag: f64,
+    mag_err: f64,
+    is_primary: bool,
+}
+
+fn is_better_result(cand: &DetectionResult, current: &DetectionResult) -> bool {
+    if cand.detected != current.detected {
+        return cand.detected;
+    }
+    if cand.n_detections != current.n_detections {
+        return cand.n_detections > current.n_detections;
+    }
+    if cand.n_detections_primary != current.n_detections_primary {
+        return cand.n_detections_primary > current.n_detections_primary;
+    }
+    if cand.n_bands_detected != current.n_bands_detected {
+        return cand.n_bands_detected > current.n_bands_detected;
+    }
+    match (cand.first_detection_mjd, current.first_detection_mjd) {
+        (Some(ca), Some(cu)) => ca < cu,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+fn evaluate_detection_slice(
+    pts: &[DetectionPoint],
+    criteria: &DetectionCriteria,
+    explosion_mjd: Option<f64>,
+) -> DetectionResult {
+    let n_detections = pts.len();
+    let n_detections_primary = pts.iter().filter(|p| p.is_primary).count();
+    let mut bands_detected = HashSet::new();
+    let mut detections_per_band: HashMap<String, usize> = HashMap::new();
+
+    // Collect per-band detected photometry for rate computation.
+    // Each entry: (time, mag, mag_err) sorted by time within band.
+    let mut band_photometry: HashMap<String, Vec<(f64, f64, f64)>> = HashMap::new();
+
+    // Find peak (brightest detection) across all bands in this window.
     let mut peak_mjd: Option<f64> = None;
     let mut peak_mag: Option<f64> = None;
-    // Collect all (mjd, mag) pairs for detected observations.
-    let mut detected_phot: Vec<(f64, f64)> = Vec::new();
 
-    for (i, obs) in observations.iter().enumerate() {
-        if let Some(t0) = explosion_mjd {
-            if obs.mjd < t0 { continue; }
-        }
-        let band_name = &obs.band.0;
-        if let Some(mags) = evaluation.apparent_mags.get(band_name) {
-            if i < mags.len() {
-                let app_mag = mags[i];
-                let depth_secondary = obs.five_sigma_depth
-                    + if criteria.snr_threshold_secondary < criteria.snr_threshold
-                        && criteria.snr_threshold_secondary > 0.0
-                    {
-                        2.5 * (criteria.snr_threshold / criteria.snr_threshold_secondary).log10()
-                    } else {
-                        0.0
-                    };
-                if app_mag < depth_secondary {
-                    detected_phot.push((obs.mjd, app_mag));
-                    match peak_mag {
-                        Some(prev) if app_mag < prev => {
-                            peak_mag = Some(app_mag);
-                            peak_mjd = Some(obs.mjd);
-                        }
-                        None => {
-                            peak_mag = Some(app_mag);
-                            peak_mjd = Some(obs.mjd);
-                        }
-                        _ => {}
-                    }
-                }
+    for p in pts {
+        bands_detected.insert(p.band.clone());
+        *detections_per_band.entry(p.band.clone()).or_insert(0) += 1;
+        band_photometry
+            .entry(p.band.clone())
+            .or_default()
+            .push((p.mjd, p.mag, p.mag_err));
+
+        match peak_mag {
+            Some(prev) if p.mag < prev => {
+                peak_mag = Some(p.mag);
+                peak_mjd = Some(p.mjd);
             }
+            None => {
+                peak_mag = Some(p.mag);
+                peak_mjd = Some(p.mjd);
+            }
+            _ => {}
         }
     }
 
-    // Count pre/post peak detections and phase range.
+    let first_detection_mjd = pts.first().map(|p| p.mjd);
+    let last_detection_mjd = pts.last().map(|p| p.mjd);
+
+    // Count pre/post peak detections and phase range from the evaluated window's detections.
     let mut n_pre_peak = 0usize;
     let mut n_post_peak = 0usize;
     let mut phase_min_days: Option<f64> = None;
     let mut phase_max_days: Option<f64> = None;
 
     if let Some(pk_mjd) = peak_mjd {
-        for &(mjd, _) in &detected_phot {
-            let phase = mjd - pk_mjd;
+        for p in pts {
+            let phase = p.mjd - pk_mjd;
             if phase < -0.01 {
                 n_pre_peak += 1;
             } else if phase > 0.01 {
@@ -632,7 +667,7 @@ pub fn evaluate_detection_with_t0(
 
     for (_band, mut phot) in band_photometry {
         // Sort by time.
-        phot.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        phot.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
         // Bin nearby observations (within rate_dedup_window_days), averaging
         // fluxes within each bin. Set to 0.0 to disable (e.g. for Argus
@@ -657,8 +692,10 @@ pub fn evaluate_detection_with_t0(
                     let mean_t: f64 = bin_times.iter().sum::<f64>() / n;
                     let mean_flux: f64 = bin_fluxes.iter().sum::<f64>() / n;
                     let mean_mag = -2.5 * mean_flux.log10();
-                    let mean_err: f64 = (bin_errs.iter().map(|e| e * e).sum::<f64>() / n).sqrt() / n.sqrt();
+                    let mean_err: f64 =
+                        (bin_errs.iter().map(|e| e * e).sum::<f64>() / n).sqrt() / n.sqrt();
                     binned.push((mean_t, mean_mag, mean_err));
+
                     // Start new bin
                     bin_start = p.0;
                     bin_times = vec![p.0];
@@ -671,7 +708,8 @@ pub fn evaluate_detection_with_t0(
             let mean_t: f64 = bin_times.iter().sum::<f64>() / n;
             let mean_flux: f64 = bin_fluxes.iter().sum::<f64>() / n;
             let mean_mag = -2.5 * mean_flux.log10();
-            let mean_err: f64 = (bin_errs.iter().map(|e| e * e).sum::<f64>() / n).sqrt() / n.sqrt();
+            let mean_err: f64 =
+                (bin_errs.iter().map(|e| e * e).sum::<f64>() / n).sqrt() / n.sqrt();
             binned.push((mean_t, mean_mag, mean_err));
 
             phot = binned;
@@ -946,5 +984,142 @@ mod tests {
         let result = evaluate_detection(&eval, &obs_refs, &criteria);
         assert!(!result.detected);
         assert_eq!(result.n_detections, 0);
+    }
+
+    #[test]
+    fn test_rolling_window_selects_valid_over_larger_invalid_window() {
+        // Window 1: 4 detections at MJD 60000..60003, all in 'g'-band.
+        // Window 2: 3 detections at MJD 60050..60052, across 'g' and 'r' bands.
+        let mut obs = Vec::new();
+        for day in 0..4 {
+            obs.push(make_obs(60000.0 + day as f64, "g", 25.0));
+        }
+        obs.push(make_obs(60050.0, "g", 25.0));
+        obs.push(make_obs(60051.0, "r", 25.0));
+        obs.push(make_obs(60052.0, "r", 25.0));
+
+        let obs_refs: Vec<&SurveyObservation> = obs.iter().collect();
+
+        let mut g_mags = vec![99.0; 7];
+        let mut r_mags = vec![99.0; 7];
+        // Window 1 (indices 0..4): all 'g' detected
+        for i in 0..4 {
+            g_mags[i] = 22.0;
+        }
+        // Window 2 (indices 4..7):
+        g_mags[4] = 22.0; // obs 4 (60050.0)
+        r_mags[5] = 22.0; // obs 5 (60051.0)
+        r_mags[6] = 22.0; // obs 6 (60052.0)
+
+        let mut mags = HashMap::new();
+        mags.insert("g".to_string(), g_mags);
+        mags.insert("r".to_string(), r_mags);
+
+        let times_mjd: Vec<f64> = obs.iter().map(|o| o.mjd).collect();
+        let eval = LightcurveEvaluation {
+            apparent_mags: mags,
+            times_mjd,
+        };
+
+        let criteria = DetectionCriteria {
+            min_detections: 3,
+            min_bands: 2,
+            rolling_window_days: Some(5.0),
+            ..Default::default()
+        };
+
+        let result = evaluate_detection(&eval, &obs_refs, &criteria);
+        // Window 1 has 4 detections but only 1 band -> fails min_bands: 2.
+        // Window 2 has 3 detections in 2 bands -> satisfies all criteria.
+        // The evaluation must evaluate each window and select Window 2!
+        assert!(result.detected, "Candidate window meeting criteria should be selected");
+        assert_eq!(result.n_detections, 3);
+        assert_eq!(result.n_bands_detected, 2);
+        assert_eq!(result.first_detection_mjd, Some(60050.0));
+    }
+
+    #[test]
+    fn test_rolling_window_peak_and_phase_use_selected_window() {
+        // Earlier outlier detection at MJD 60000.0 with mag 15.0 (peak globally).
+        // Later window at MJD 60050..60052 with mag 21.0, 19.0 (window peak), 20.0.
+        let obs = vec![
+            make_obs(60000.0, "g", 25.0),
+            make_obs(60050.0, "g", 25.0),
+            make_obs(60051.0, "g", 25.0),
+            make_obs(60052.0, "g", 25.0),
+        ];
+        let obs_refs: Vec<&SurveyObservation> = obs.iter().collect();
+
+        let mut mags = HashMap::new();
+        mags.insert("g".to_string(), vec![15.0, 21.0, 19.0, 20.0]);
+
+        let eval = LightcurveEvaluation {
+            apparent_mags: mags,
+            times_mjd: vec![60000.0, 60050.0, 60051.0, 60052.0],
+        };
+
+        let criteria = DetectionCriteria {
+            min_detections: 3,
+            rolling_window_days: Some(5.0),
+            ..Default::default()
+        };
+
+        let result = evaluate_detection(&eval, &obs_refs, &criteria);
+        assert!(result.detected);
+        assert_eq!(result.n_detections, 3);
+        // Peak, pre/post-peak, and phase coverage must be evaluated strictly from the selected window!
+        assert_eq!(result.peak_mag, Some(19.0));
+        assert_eq!(result.peak_mjd, Some(60051.0));
+        assert_eq!(result.n_pre_peak, 1);  // obs at 60050.0
+        assert_eq!(result.n_post_peak, 1); // obs at 60052.0
+        assert_eq!(result.phase_min_days, Some(-1.0));
+        assert_eq!(result.phase_max_days, Some(1.0));
+    }
+
+    #[test]
+    fn test_rolling_window_pre_peak_criteria_selection() {
+        // Window 1: MJD 60000..60004: 5 detections all after peak (peak at 60000.0).
+        // Window 2: MJD 60050..60053: 4 detections with peak at 60052.0 (2 pre-peak).
+        let obs = vec![
+            make_obs(60000.0, "g", 25.0),
+            make_obs(60001.0, "g", 25.0),
+            make_obs(60002.0, "g", 25.0),
+            make_obs(60003.0, "g", 25.0),
+            make_obs(60004.0, "g", 25.0),
+            make_obs(60050.0, "g", 25.0),
+            make_obs(60051.0, "g", 25.0),
+            make_obs(60052.0, "g", 25.0),
+            make_obs(60053.0, "g", 25.0),
+        ];
+        let obs_refs: Vec<&SurveyObservation> = obs.iter().collect();
+
+        let mut mags = HashMap::new();
+        // Window 1: mag 18.0 (peak), 19.0, 20.0, 21.0, 22.0 -> 0 pre-peak
+        // Window 2: mag 21.0, 20.0, 18.0 (peak at 60052), 19.0 -> 2 pre-peak
+        mags.insert(
+            "g".to_string(),
+            vec![18.0, 19.0, 20.0, 21.0, 22.0, 21.0, 20.0, 18.0, 19.0],
+        );
+
+        let times_mjd: Vec<f64> = obs.iter().map(|o| o.mjd).collect();
+        let eval = LightcurveEvaluation {
+            apparent_mags: mags,
+            times_mjd,
+        };
+
+        let criteria = DetectionCriteria {
+            min_detections: 3,
+            min_pre_peak_detections: 1,
+            rolling_window_days: Some(5.0),
+            ..Default::default()
+        };
+
+        let result = evaluate_detection(&eval, &obs_refs, &criteria);
+        // Window 1 has 5 detections but fails min_pre_peak_detections: 1.
+        // Window 2 has 4 detections and 2 pre-peak detections, satisfying the criteria.
+        assert!(result.detected);
+        assert_eq!(result.n_detections, 4);
+        assert_eq!(result.first_detection_mjd, Some(60050.0));
+        assert_eq!(result.n_pre_peak, 2);
     }
 }
