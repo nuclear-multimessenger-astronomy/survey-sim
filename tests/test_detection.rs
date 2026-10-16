@@ -266,3 +266,48 @@ fn test_custom_snr_thresholds() {
     assert_eq!(res_loose.n_detections, 2);
     assert_eq!(res_loose.n_detections_primary, 2);
 }
+
+
+#[test]
+fn test_rolling_window_preserves_snr_tiers_and_explosion_filter() {
+    use survey_sim::detection::evaluate_detection_with_t0;
+
+    // Include a bright pre-explosion observation that must never count.
+    let obs = vec![
+        make_obs(59999.9, "g", 20.0),
+        make_obs(60000.1, "g", 20.0),
+        make_obs(60000.2, "g", 20.0),
+        make_obs(60000.3, "g", 20.0),
+    ];
+    let obs_refs: Vec<_> = obs.iter().collect();
+    let eval = LightcurveEvaluation {
+        apparent_mags: HashMap::from([("g".to_string(), vec![10.0, 18.0, 20.0, 20.5])]),
+        times_mjd: obs.iter().map(|o| o.mjd).collect(),
+    };
+
+    // Separate bins make each stack a single observation. Detection includes
+    // both raw observations and stacks, so each eligible point counts twice.
+    for stacked in [false, true] {
+        let multiplier = if stacked { 2 } else { 1 };
+        for (primary, secondary, n_total, n_primary) in [
+            (10.0, 10.0, 1, 1),
+            (10.0, 3.0, 3, 1),
+            (3.0, 3.0, 3, 3),
+        ] {
+            let criteria = DetectionCriteria {
+                min_detections: multiplier * 2,
+                snr_threshold: primary,
+                snr_threshold_secondary: secondary,
+                rolling_window_days: Some(1.0),
+                stack_windows_s: if stacked { vec![60.0] } else { vec![] },
+                ..Default::default()
+            };
+            let result = evaluate_detection_with_t0(&eval, &obs_refs, &criteria, Some(60000.0));
+            assert_eq!(result.n_detections, multiplier * n_total);
+            assert_eq!(result.n_detections_primary, multiplier * n_primary);
+            assert_eq!(result.detected, n_total >= 2);
+            assert_eq!(result.first_detection_mjd, Some(60000.1));
+            assert_eq!(result.peak_mag, Some(18.0));
+        }
+    }
+}
