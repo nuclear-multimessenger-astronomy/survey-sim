@@ -13,21 +13,27 @@ use survey_sim::types::{Band, TransientInstance};
 #[pyo3(name = "MetzgerKNModel")]
 pub struct PyMetzgerKNModel {
     pub(crate) peak_abs_mag: f64,
+    pub(crate) max_phase_days: f64,
 }
 
 #[pymethods]
 impl PyMetzgerKNModel {
     #[new]
-    #[pyo3(signature = (peak_abs_mag=-16.0))]
-    fn new(peak_abs_mag: f64) -> Self {
-        Self { peak_abs_mag }
+    #[pyo3(signature = (peak_abs_mag=-16.0, max_phase_days=25.0))]
+    fn new(peak_abs_mag: f64, max_phase_days: f64) -> Self {
+        Self {
+            peak_abs_mag,
+            max_phase_days,
+        }
     }
 }
 
 impl PyMetzgerKNModel {
     pub fn to_model(&self) -> ParametricModel {
         use lightcurve_fitting::SviModelName;
-        ParametricModel::new().with_model(SviModelName::MetzgerKN)
+        ParametricModel::new()
+            .with_model(SviModelName::MetzgerKN)
+            .with_max_phase(self.max_phase_days)
     }
 }
 
@@ -40,20 +46,24 @@ impl PyMetzgerKNModel {
 #[pyo3(name = "ParametricModel")]
 pub struct PyParametricModel {
     pub(crate) model_name: Option<String>,
+    pub(crate) max_phase_days: Option<f64>,
 }
 
 #[pymethods]
 impl PyParametricModel {
     #[new]
-    #[pyo3(signature = (model_name=None))]
-    fn new(model_name: Option<String>) -> Self {
-        Self { model_name }
+    #[pyo3(signature = (model_name=None, max_phase_days=None))]
+    fn new(model_name: Option<String>, max_phase_days: Option<f64>) -> Self {
+        Self {
+            model_name,
+            max_phase_days,
+        }
     }
 }
 
 impl PyParametricModel {
     pub fn to_model(&self) -> ParametricModel {
-        if let Some(ref name) = self.model_name {
+        let mut model = if let Some(ref name) = self.model_name {
             use lightcurve_fitting::SviModelName;
             let svi = match name.to_lowercase().as_str() {
                 "tde" => SviModelName::Tde,
@@ -67,7 +77,11 @@ impl PyParametricModel {
             ParametricModel::new().with_model(svi)
         } else {
             ParametricModel::new()
+        };
+        if let Some(mp) = self.max_phase_days {
+            model = model.with_max_phase(mp);
         }
+        model
     }
 }
 
@@ -80,16 +94,26 @@ pub struct PythonCallbackModel {
     callback: PyObject,
     has_batch: bool,
     has_columnar: bool,
+    max_phase_days: f64,
 }
 
 impl PythonCallbackModel {
     pub fn new(callback: PyObject) -> Self {
-        let (has_batch, has_columnar) = Python::with_gil(|py| {
+        let (has_batch, has_columnar, max_phase_days) = Python::with_gil(|py| {
             let batch = callback.getattr(py, "batch_predict").is_ok();
             let columnar = callback.getattr(py, "batch_evaluate_arrays").is_ok();
-            (batch, columnar)
+            let max_phase = callback
+                .getattr(py, "max_phase_days")
+                .and_then(|v| v.extract::<f64>(py))
+                .unwrap_or(30.0);
+            (batch, columnar, max_phase)
         });
-        Self { callback, has_batch, has_columnar }
+        Self {
+            callback,
+            has_batch,
+            has_columnar,
+            max_phase_days,
+        }
     }
 }
 
@@ -178,6 +202,10 @@ impl LightcurveModel for PythonCallbackModel {
 
     fn supports_batch(&self) -> bool {
         self.has_batch
+    }
+
+    fn max_phase_days(&self) -> f64 {
+        self.max_phase_days
     }
 
     fn batch_evaluate(
@@ -434,13 +462,18 @@ impl PythonCallbackModel {
 pub struct PyBlastwaveModel {
     pub(crate) radiation_model: String,
     pub(crate) band_frequencies: HashMap<String, f64>,
+    pub(crate) max_phase_days: f64,
 }
 
 #[pymethods]
 impl PyBlastwaveModel {
     #[new]
-    #[pyo3(signature = (radiation_model="sync_ssa_smooth", band_frequencies=None))]
-    fn new(radiation_model: &str, band_frequencies: Option<HashMap<String, f64>>) -> Self {
+    #[pyo3(signature = (radiation_model="sync_ssa_smooth", band_frequencies=None, max_phase_days=100.0))]
+    fn new(
+        radiation_model: &str,
+        band_frequencies: Option<HashMap<String, f64>>,
+        max_phase_days: f64,
+    ) -> Self {
         let freqs = band_frequencies.unwrap_or_else(|| {
             let mut m = HashMap::new();
             m.insert("g".to_string(), 6.3e14);
@@ -449,6 +482,7 @@ impl PyBlastwaveModel {
         Self {
             radiation_model: radiation_model.to_string(),
             band_frequencies: freqs,
+            max_phase_days,
         }
     }
 }
@@ -456,6 +490,7 @@ impl PyBlastwaveModel {
 impl PyBlastwaveModel {
     pub fn to_model(&self) -> BlastwaveModel {
         BlastwaveModel::new(&self.radiation_model, self.band_frequencies.clone())
+            .with_max_phase(self.max_phase_days)
     }
 }
 

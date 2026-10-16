@@ -4,6 +4,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use survey_sim::detection::DetectionCriteria;
+use survey_sim::lightcurve::LightcurveModel;
 use survey_sim::efficiency::{
     rates::{compute_rate, estimate_survey_omega},
     EfficiencyGrid, GridAxis,
@@ -29,14 +30,14 @@ pub struct PySimulationPipeline {
     /// Multiple windows produce independent stacked measurements that are all
     /// combined for detection (e.g., [900, 3600] for 15-min + 1-hour stacks).
     stack_windows_s: Option<Vec<f64>>,
-    /// Max rest-frame days after explosion to query for observations (default 100).
-    time_window_days: f64,
+    /// Optional override for max rest-frame days after explosion to query (defaults to model.max_phase_days()).
+    time_window_days: Option<f64>,
 }
 
 #[pymethods]
 impl PySimulationPipeline {
     #[new]
-    #[pyo3(signature = (survey, populations, models, detection, n_transients=100000, seed=42, stack_windows_s=None, time_window_days=100.0))]
+    #[pyo3(signature = (survey, populations, models, detection, n_transients=100000, seed=42, stack_windows_s=None, time_window_days=None))]
     fn new(
         survey: Py<PySurveyStore>,
         populations: Vec<PyObject>,
@@ -45,7 +46,7 @@ impl PySimulationPipeline {
         n_transients: usize,
         seed: u64,
         stack_windows_s: Option<Vec<f64>>,
-        time_window_days: f64,
+        time_window_days: Option<f64>,
     ) -> Self {
         Self {
             survey,
@@ -309,7 +310,7 @@ fn run_pipeline_borrowed(
     n_transients: usize,
     seed: u64,
     stack_windows_s: Option<Vec<f64>>,
-    time_window_days: f64,
+    time_window_days: Option<f64>,
     include_undetected: bool,
 ) -> PipelineResult {
     use rayon::prelude::*;
@@ -337,7 +338,8 @@ fn run_pipeline_borrowed(
             None => continue,
         };
 
-        let time_window = time_window_days;
+        let pop_type = pop.transient_type();
+        let default_window = time_window_days.unwrap_or_else(|| model.max_phase_days_for_type(pop_type));
         let t_phase1 = Instant::now();
 
         // Phase 1: Spatial matching (parallel).
@@ -345,6 +347,11 @@ fn run_pipeline_borrowed(
             .par_iter()
             .enumerate()
             .map(|(i, inst)| {
+                let time_window = if time_window_days.is_some() {
+                    default_window
+                } else {
+                    model.max_phase_days_for_instance(inst)
+                };
                 // Look back 30 days before explosion for non-detection upper limits
                 let mjd_min = inst.t_exp - 30.0;
                 let mjd_max = inst.t_exp + time_window * (1.0 + inst.z);
