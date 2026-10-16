@@ -294,18 +294,33 @@ fn compute_band_rates(
     (rising, fading)
 }
 
+/// Compute signal-to-noise ratio (SNR) from apparent magnitude and 5-sigma limiting depth.
+///
+/// SNR = 5 * 10^(0.4 * (five_sigma_depth - apparent_mag))
+#[inline]
+pub fn snr_from_depth(apparent_mag: f64, five_sigma_depth: f64) -> f64 {
+    5.0 * 10_f64.powf(0.4 * (five_sigma_depth - apparent_mag))
+}
+
+/// Estimate magnitude error from SNR.
+///
+/// sigma_mag = 1.0857362 / SNR  (where 1.0857362 = 2.5 / ln(10))
+#[inline]
+pub fn mag_error_from_snr(snr: f64) -> f64 {
+    if snr > 0.0 {
+        1.0857362 / snr
+    } else {
+        99.0
+    }
+}
+
 /// Estimate magnitude error from apparent magnitude and five-sigma depth.
 ///
 /// At the 5-sigma limit, SNR=5, so sigma_mag = 1.0857/5 ≈ 0.217.
 /// SNR scales as 10^(0.4*(depth - mag)), so:
-///   sigma_mag = 1.0857 / (5 * 10^(0.4*(depth - mag)))
-fn mag_error_from_depth(apparent_mag: f64, five_sigma_depth: f64) -> f64 {
-    let snr = 5.0 * 10_f64.powf(0.4 * (five_sigma_depth - apparent_mag));
-    if snr > 0.0 {
-        1.0857 / snr
-    } else {
-        99.0
-    }
+///   sigma_mag = 1.0857362 / (5 * 10^(0.4*(depth - mag)))
+pub fn mag_error_from_depth(apparent_mag: f64, five_sigma_depth: f64) -> f64 {
+    mag_error_from_snr(snr_from_depth(apparent_mag, five_sigma_depth))
 }
 
 /// Result of detection evaluation for a single transient.
@@ -377,14 +392,11 @@ pub fn evaluate_detection_with_t0(
     // Each entry: (time, mag, mag_err) sorted by time within band.
     let mut band_photometry: HashMap<String, Vec<(f64, f64, f64)>> = HashMap::new();
 
-    // Compute the secondary depth threshold. The five_sigma_depth corresponds to
-    // SNR=5. For a different SNR threshold, depth_eff = depth + 2.5*log10(5/snr).
-    let secondary_depth_boost = if criteria.snr_threshold_secondary < criteria.snr_threshold
-        && criteria.snr_threshold_secondary > 0.0
-    {
-        2.5 * (criteria.snr_threshold / criteria.snr_threshold_secondary).log10()
+    let snr_thresh_primary = criteria.snr_threshold;
+    let snr_thresh_secondary = if criteria.snr_threshold_secondary > 0.0 {
+        criteria.snr_threshold.min(criteria.snr_threshold_secondary)
     } else {
-        0.0
+        criteria.snr_threshold
     };
 
     // ── Flux-stacking detection ──
@@ -449,9 +461,9 @@ pub fn evaluate_detection_with_t0(
                 let depth_boost = 2.5 * (n as f64).sqrt().log10();
                 let stacked_depth = median_depth + depth_boost;
 
-                let depth_secondary = stacked_depth + secondary_depth_boost;
+                let stacked_snr = snr_from_depth(stacked_mag, stacked_depth);
 
-                if stacked_mag < depth_secondary {
+                if stacked_snr >= snr_thresh_secondary {
                     n_detections += 1;
                     bands_detected.insert(band_name.clone());
                     *detections_per_band.entry(band_name.clone()).or_insert(0) += 1;
@@ -462,11 +474,11 @@ pub fn evaluate_detection_with_t0(
                     let mjd_mid = 0.5 * (mjd_min + mjd_max);
                     detection_mjds.push(mjd_mid);
 
-                    if stacked_mag < stacked_depth {
+                    if stacked_snr >= snr_thresh_primary {
                         n_detections_primary += 1;
                     }
 
-                    let mag_err = mag_error_from_depth(stacked_mag, stacked_depth);
+                    let mag_err = mag_error_from_snr(stacked_snr);
                     band_photometry
                         .entry(band_name.clone())
                         .or_default()
@@ -485,22 +497,25 @@ pub fn evaluate_detection_with_t0(
         if let Some(mags) = evaluation.apparent_mags.get(band_name) {
             if i < mags.len() {
                 let app_mag = mags[i];
-                let depth_secondary = obs.five_sigma_depth + secondary_depth_boost;
+                if !app_mag.is_finite() || app_mag > 90.0 {
+                    continue;
+                }
+                let snr = snr_from_depth(app_mag, obs.five_sigma_depth);
 
                 // Two-tier detection: check against secondary (looser) threshold first.
-                if app_mag < depth_secondary {
+                if snr >= snr_thresh_secondary {
                     n_detections += 1;
                     bands_detected.insert(band_name.clone());
                     *detections_per_band.entry(band_name.clone()).or_insert(0) += 1;
                     detection_mjds.push(obs.mjd);
 
                     // Also check primary (stricter) threshold.
-                    if app_mag < obs.five_sigma_depth {
+                    if snr >= snr_thresh_primary {
                         n_detections_primary += 1;
                     }
 
                     // Store detected photometry for rate computation.
-                    let mag_err = mag_error_from_depth(app_mag, obs.five_sigma_depth);
+                    let mag_err = mag_error_from_snr(snr);
                     band_photometry
                         .entry(band_name.clone())
                         .or_default()
@@ -524,15 +539,11 @@ pub fn evaluate_detection_with_t0(
         if let Some(mags) = evaluation.apparent_mags.get(band_name) {
             if i < mags.len() {
                 let app_mag = mags[i];
-                let depth_secondary = obs.five_sigma_depth
-                    + if criteria.snr_threshold_secondary < criteria.snr_threshold
-                        && criteria.snr_threshold_secondary > 0.0
-                    {
-                        2.5 * (criteria.snr_threshold / criteria.snr_threshold_secondary).log10()
-                    } else {
-                        0.0
-                    };
-                if app_mag < depth_secondary {
+                if !app_mag.is_finite() || app_mag > 90.0 {
+                    continue;
+                }
+                let snr = snr_from_depth(app_mag, obs.five_sigma_depth);
+                if snr >= snr_thresh_secondary {
                     detected_phot.push((obs.mjd, app_mag));
                     match peak_mag {
                         Some(prev) if app_mag < prev => {
