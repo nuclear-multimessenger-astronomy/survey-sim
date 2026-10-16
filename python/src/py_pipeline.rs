@@ -4,6 +4,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use survey_sim::detection::DetectionCriteria;
+use survey_sim::lightcurve::LightcurveModel;
 use survey_sim::efficiency::{
     rates::{compute_rate, estimate_survey_omega},
     EfficiencyGrid, GridAxis,
@@ -29,14 +30,14 @@ pub struct PySimulationPipeline {
     /// Multiple windows produce independent stacked measurements that are all
     /// combined for detection (e.g., [900, 3600] for 15-min + 1-hour stacks).
     stack_windows_s: Option<Vec<f64>>,
-    /// Max rest-frame days after explosion to query for observations (default 100).
-    time_window_days: f64,
+    /// Optional override for max rest-frame days after explosion to query (defaults to model.max_phase_days()).
+    time_window_days: Option<f64>,
 }
 
 #[pymethods]
 impl PySimulationPipeline {
     #[new]
-    #[pyo3(signature = (survey, populations, models, detection, n_transients=100000, seed=42, stack_windows_s=None, time_window_days=100.0))]
+    #[pyo3(signature = (survey, populations, models, detection, n_transients=100000, seed=42, stack_windows_s=None, time_window_days=None))]
     fn new(
         survey: Py<PySurveyStore>,
         populations: Vec<PyObject>,
@@ -45,7 +46,7 @@ impl PySimulationPipeline {
         n_transients: usize,
         seed: u64,
         stack_windows_s: Option<Vec<f64>>,
-        time_window_days: f64,
+        time_window_days: Option<f64>,
     ) -> Self {
         Self {
             survey,
@@ -217,6 +218,7 @@ fn build_photometry_from_eval(
     eval: &survey_sim::lightcurve::LightcurveEvaluation,
     obs: Vec<&survey_sim::survey::SurveyObservation>,
     inst: &survey_sim::types::TransientInstance,
+    criteria: &DetectionCriteria,
     save_sub_threshold: bool,
 ) -> (Vec<(f64, f64, f64, String)>, Vec<(f64, f64, String)>) {
     let mut photometry = Vec::new();
@@ -226,23 +228,15 @@ fn build_photometry_from_eval(
         (inst.t_exp * 1000.0) as u64 ^ (inst.z * 1e6) as u64
     );
 
-    // Per-band counter: apparent_mags[band] is pushed in obs-order per band,
-    // so we need a counter per band to index the correct mag.
-    let mut band_counts: HashMap<String, usize> = HashMap::new();
+    let snr_thresh = if criteria.snr_threshold_secondary > 0.0 {
+        criteria.snr_threshold.min(criteria.snr_threshold_secondary)
+    } else {
+        criteria.snr_threshold
+    };
 
-    for observation in obs.iter() {
+    for (obs_idx, observation) in obs.iter().enumerate() {
         let band_name = observation.band.0.as_str();
         let depth = observation.five_sigma_depth;
-
-        // Increment per-band counter for EVERY observation (pre and post),
-        // since apparent_mags[band] contains one entry per obs in obs-index
-        // order (with mag=99 for pre-explosion).
-        let count_val = {
-            let count = band_counts.entry(band_name.to_string()).or_insert(0);
-            let v = *count;
-            *count += 1;
-            v
-        };
 
         // Pre-explosion observations are always non-detections
         if observation.mjd < inst.t_exp {
@@ -250,9 +244,10 @@ fn build_photometry_from_eval(
             continue;
         }
 
-        // Get model apparent magnitude for this observation (per-band indexing).
+        // Get model apparent magnitude for this observation (indexed by global obs_idx,
+        // matching evaluate_detection and LightcurveEvaluation).
         let model_mag = match eval.apparent_mags.get(band_name) {
-            Some(mags) if count_val < mags.len() => mags[count_val],
+            Some(mags) if obs_idx < mags.len() => mags[obs_idx],
             _ => {
                 // No mag available for this band — record as non-detection
                 non_detections.push((observation.mjd, depth, band_name.to_string()));
@@ -266,11 +261,10 @@ fn build_photometry_from_eval(
             continue;
         }
 
-        // SNR = 5 * 10^(0.4 * (depth - mag))
-        let snr = 5.0 * 10f64.powf(0.4 * (depth - model_mag));
-        let mag_err = 1.0857362 / snr;
+        let snr = survey_sim::detection::snr_from_depth(model_mag, depth);
+        let mag_err = survey_sim::detection::mag_error_from_snr(snr);
 
-        if snr >= 5.0 {
+        if snr >= snr_thresh {
             // Detection: add noise and record
             let u1: f64 = rng.random::<f64>().max(1e-10);
             let u2: f64 = rng.random::<f64>();
@@ -309,7 +303,7 @@ fn run_pipeline_borrowed(
     n_transients: usize,
     seed: u64,
     stack_windows_s: Option<Vec<f64>>,
-    time_window_days: f64,
+    time_window_days: Option<f64>,
     include_undetected: bool,
 ) -> PipelineResult {
     use rayon::prelude::*;
@@ -337,7 +331,8 @@ fn run_pipeline_borrowed(
             None => continue,
         };
 
-        let time_window = time_window_days;
+        let pop_type = pop.transient_type();
+        let default_window = time_window_days.unwrap_or_else(|| model.max_phase_days_for_type(pop_type));
         let t_phase1 = Instant::now();
 
         // Phase 1: Spatial matching (parallel).
@@ -345,6 +340,11 @@ fn run_pipeline_borrowed(
             .par_iter()
             .enumerate()
             .map(|(i, inst)| {
+                let time_window = if time_window_days.is_some() {
+                    default_window
+                } else {
+                    model.max_phase_days_for_instance(inst)
+                };
                 // Look back 30 days before explosion for non-detection upper limits
                 let mjd_min = inst.t_exp - 30.0;
                 let mjd_max = inst.t_exp + time_window * (1.0 + inst.z);
@@ -458,7 +458,12 @@ fn run_pipeline_borrowed(
                     .map(|(idx, stacked_obs, stacked_eval)| {
                         let obs_refs: Vec<&survey_sim::survey::SurveyObservation> =
                             stacked_obs.iter().collect();
-                        let mut result = survey_sim::detection::evaluate_detection(stacked_eval, &obs_refs, criteria);
+                        let mut result = survey_sim::detection::evaluate_detection_with_t0(
+                            stacked_eval,
+                            &obs_refs,
+                            criteria,
+                            Some(instances[*idx].t_exp),
+                        );
                         if gal_lat_cut > 0.0 && result.detected {
                             let b = instances[*idx].coord.galactic_lat().abs();
                             if b < gal_lat_cut {
@@ -484,7 +489,12 @@ fn run_pipeline_borrowed(
                     .map(|(idx, obs_indices, eval)| {
                         let obs_refs: Vec<&survey_sim::survey::SurveyObservation> =
                             obs_indices.iter().map(|&oi| survey.get(oi)).collect();
-                        let mut result = survey_sim::detection::evaluate_detection(eval, &obs_refs, criteria);
+                        let mut result = survey_sim::detection::evaluate_detection_with_t0(
+                            eval,
+                            &obs_refs,
+                            criteria,
+                            Some(instances[*idx].t_exp),
+                        );
                         if gal_lat_cut > 0.0 && result.detected {
                             let b = instances[*idx].coord.galactic_lat().abs();
                             if b < gal_lat_cut {
@@ -589,7 +599,7 @@ fn run_pipeline_borrowed(
             let (photometry, non_detections) = if let Some(ref sm) = stacked_map {
                 if let Some(&&ref entry) = sm.get(&idx) {
                     let (_, ref obs_vec, ref eval) = entry;
-                    build_photometry_from_eval(eval, obs_vec.iter().collect(), inst, false)
+                    build_photometry_from_eval(eval, obs_vec.iter().collect(), inst, criteria, false)
                 } else {
                     continue;
                 }
@@ -597,7 +607,7 @@ fn run_pipeline_borrowed(
                 let (_, ref obs_indices, ref eval) = entry;
                 let obs_refs: Vec<&survey_sim::survey::SurveyObservation> =
                     obs_indices.iter().map(|&oi| survey.get(oi)).collect();
-                build_photometry_from_eval(eval, obs_refs, inst, false)
+                build_photometry_from_eval(eval, obs_refs, inst, criteria, false)
             } else {
                 continue;
             };
@@ -621,7 +631,7 @@ fn run_pipeline_borrowed(
                 let (photometry, non_detections) = if let Some(ref sm) = stacked_map {
                     if let Some(&&ref entry) = sm.get(&idx) {
                         let (_, ref obs_vec, ref eval) = entry;
-                        build_photometry_from_eval(eval, obs_vec.iter().collect(), inst, true)
+                        build_photometry_from_eval(eval, obs_vec.iter().collect(), inst, criteria, true)
                     } else {
                         continue;
                     }
@@ -629,7 +639,7 @@ fn run_pipeline_borrowed(
                     let (_, ref obs_indices, ref eval) = entry;
                     let obs_refs: Vec<&survey_sim::survey::SurveyObservation> =
                         obs_indices.iter().map(|&oi| survey.get(oi)).collect();
-                    build_photometry_from_eval(eval, obs_refs, inst, true)
+                    build_photometry_from_eval(eval, obs_refs, inst, criteria, true)
                 } else {
                     continue;
                 };

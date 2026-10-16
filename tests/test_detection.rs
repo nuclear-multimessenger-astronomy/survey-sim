@@ -191,3 +191,123 @@ fn test_fade_rate_single_band_3pt() {
     assert!(result.is_fast_transient);
     assert!(result.detected);
 }
+
+#[test]
+fn test_snr_calculation_and_error() {
+    use survey_sim::detection::{mag_error_from_snr, snr_from_depth};
+
+    // At 5-sigma depth, SNR is exactly 5.0
+    let snr_at_depth = snr_from_depth(20.0, 20.0);
+    assert!((snr_at_depth - 5.0).abs() < 1e-10);
+
+    let err_at_5sigma = mag_error_from_snr(5.0);
+    assert!((err_at_5sigma - (1.0857362 / 5.0)).abs() < 1e-10);
+
+    // 2.5 magnitudes brighter -> 10x flux -> 10x SNR
+    let snr_bright = snr_from_depth(17.5, 20.0);
+    assert!((snr_bright - 50.0).abs() < 1e-9);
+
+    // 2.5 magnitudes fainter -> 0.1x flux -> 0.1x SNR
+    let snr_faint = snr_from_depth(22.5, 20.0);
+    assert!((snr_faint - 0.5).abs() < 1e-9);
+}
+
+#[test]
+fn test_custom_snr_thresholds() {
+    let obs = vec![
+        make_obs(60000.0, "g", 20.0), // depth 20.0
+        make_obs(60001.0, "g", 20.0),
+    ];
+    let obs_refs: Vec<&SurveyObservation> = obs.iter().collect();
+
+    let mut mags = HashMap::new();
+    // Mag 20.0 has SNR = 5.0
+    mags.insert("g".to_string(), vec![20.0, 20.0]);
+
+    let eval = LightcurveEvaluation {
+        apparent_mags: mags,
+        times_mjd: vec![60000.0, 60001.0],
+    };
+
+    // Stricter SNR threshold: snr_threshold = 10.0 (requires mag <= 19.247)
+    let criteria_strict = DetectionCriteria {
+        min_detections: 2,
+        min_bands: 1,
+        min_per_band: 1,
+        snr_threshold: 10.0,
+        min_detections_primary: 1,
+        ..Default::default()
+    };
+    let res_strict = evaluate_detection(&eval, &obs_refs, &criteria_strict);
+    // Observations have SNR=5.0, which is below 10.0 -> not detected
+    assert!(!res_strict.detected);
+    assert_eq!(res_strict.n_detections_primary, 0);
+
+    // Looser SNR threshold: snr_threshold = 3.0, snr_threshold_secondary = 3.0
+    // Mag 20.5 has SNR = 5.0 * 10^(0.4 * (20.0 - 20.5)) = 5.0 * 10^(-0.2) ≈ 3.15
+    let mut faint_mags = HashMap::new();
+    faint_mags.insert("g".to_string(), vec![20.5, 20.5]);
+    let eval_faint = LightcurveEvaluation {
+        apparent_mags: faint_mags,
+        times_mjd: vec![60000.0, 60001.0],
+    };
+
+    let criteria_loose = DetectionCriteria {
+        min_detections: 2,
+        min_bands: 1,
+        min_per_band: 1,
+        snr_threshold: 3.0,
+        snr_threshold_secondary: 3.0,
+        min_detections_primary: 1,
+        ..Default::default()
+    };
+    let res_loose = evaluate_detection(&eval_faint, &obs_refs, &criteria_loose);
+    assert!(res_loose.detected);
+    assert_eq!(res_loose.n_detections, 2);
+    assert_eq!(res_loose.n_detections_primary, 2);
+}
+
+
+#[test]
+fn test_rolling_window_preserves_snr_tiers_and_explosion_filter() {
+    use survey_sim::detection::evaluate_detection_with_t0;
+
+    // Include a bright pre-explosion observation that must never count.
+    let obs = vec![
+        make_obs(59999.9, "g", 20.0),
+        make_obs(60000.1, "g", 20.0),
+        make_obs(60000.2, "g", 20.0),
+        make_obs(60000.3, "g", 20.0),
+    ];
+    let obs_refs: Vec<_> = obs.iter().collect();
+    let eval = LightcurveEvaluation {
+        apparent_mags: HashMap::from([("g".to_string(), vec![10.0, 18.0, 20.0, 20.5])]),
+        times_mjd: obs.iter().map(|o| o.mjd).collect(),
+    };
+
+    // Separate bins make each stack a single observation. Detection includes
+    // both raw observations and stacks, so each eligible point counts twice.
+    for stacked in [false, true] {
+        let multiplier = if stacked { 2 } else { 1 };
+        for (primary, secondary, n_total, n_primary) in [
+            (10.0, 10.0, 1, 1),
+            (10.0, 3.0, 3, 1),
+            (3.0, 3.0, 3, 3),
+        ] {
+            let criteria = DetectionCriteria {
+                min_detections: multiplier * 2,
+                snr_threshold: primary,
+                snr_threshold_secondary: secondary,
+                rolling_window_days: Some(1.0),
+                stack_windows_s: if stacked { vec![60.0] } else { vec![] },
+                ..Default::default()
+            };
+            let result = evaluate_detection_with_t0(&eval, &obs_refs, &criteria, Some(60000.0));
+            assert_eq!(result.n_detections, multiplier * n_total);
+            assert_eq!(result.n_detections_primary, multiplier * n_primary);
+            assert_eq!(result.detected, n_total >= 2);
+            assert_eq!(result.first_detection_mjd, Some(60000.1));
+            assert_eq!(result.peak_mag, Some(18.0));
+        }
+    }
+}

@@ -40,11 +40,12 @@ class FiestaKNModel:
         Fiesta filter names. Defaults to all six LSST bands.
     """
 
-    def __init__(self, name="Bu2026_MLP", filters=None):
+    def __init__(self, name="Bu2026_MLP", filters=None, max_phase_days=25.0):
         if filters is None:
             filters = FIESTA_FILTERS
         self.model = FluxModel(name, filters=filters)
         self.filters = filters
+        self.max_phase_days = float(max_phase_days)
 
     def predict(self, params):
         """Evaluate the Bu2026 kilonova model at observation times.
@@ -87,12 +88,16 @@ class FiestaKNModel:
 
         # Interpolate fiesta grid to each observation time, per band.
         # Extrapolate outside fiesta range by holding the boundary values.
+        t_upper = min(self.max_phase_days, float(model_times[-1]))
+        t_lower = max(0.0, float(model_times[0]))
+        out_of_bounds = (obs_rest_days < t_lower) | (obs_rest_days > t_upper)
         result_mags = {}
         for fiesta_filt, short_band in _FIESTA_TO_BAND.items():
             if fiesta_filt not in model_mags:
                 continue
             grid_mags = np.asarray(model_mags[fiesta_filt], dtype=np.float64)
-            interp_all = np.interp(obs_rest_days, model_times, grid_mags)
+            interp_all = np.interp(obs_rest_days, model_times, grid_mags, left=99.0, right=99.0)
+            interp_all = np.where(out_of_bounds, 99.0, interp_all)
             result_mags[short_band] = interp_all.tolist()
 
         # For bands not covered by fiesta, fill with 99.
@@ -179,9 +184,16 @@ class FiestaKNModel:
         # model_times_batch is (N, T) — each row is a sorted time grid
         T = model_times_batch.shape[1]
 
-        # Clamp obs times to grid range for each transient (shared across bands)
+        # Clamp obs times to grid range for interpolation, but mask out-of-bounds to 99.0
         t_min = model_times_batch[:, 0:1]   # (N, 1)
         t_max = model_times_batch[:, -1:]   # (N, 1)
+        t_upper = np.minimum(t_max, self.max_phase_days)
+        t_lower = np.maximum(0.0, t_min)
+        out_of_bounds = (
+            np.isnan(obs_rest_padded)
+            | (obs_rest_padded < t_lower)
+            | (obs_rest_padded > t_upper)
+        )
         obs_clamped = np.clip(obs_rest_padded, t_min, t_max)
 
         # Vectorized per-row searchsorted: flatten rows, offset by row index, searchsorted once.
@@ -214,7 +226,8 @@ class FiestaKNModel:
             grid_mags = model_mags_np[fiesta_filt]  # (N, T)
             m0 = np.take_along_axis(grid_mags, idx, axis=1)
             m1 = np.take_along_axis(grid_mags, np.minimum(idx + 1, T - 1), axis=1)
-            interp_results[short_band] = m0 + w * (m1 - m0)  # (N, max_obs)
+            interp_mags = m0 + w * (m1 - m0)  # (N, max_obs)
+            interp_results[short_band] = np.where(out_of_bounds, 99.0, interp_mags)
 
         # Build results list — slice each transient's actual obs count
         results = []

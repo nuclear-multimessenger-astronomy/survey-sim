@@ -158,12 +158,12 @@ impl SimulationPipeline {
 
             // Phase 1: Spatial-temporal matching (parallel).
             log::info!("Phase 1: Spatial-temporal matching...");
-            let time_window = 100.0; // days after explosion to check
 
             let matched: Vec<(usize, Vec<usize>)> = instances
                 .par_iter()
                 .enumerate()
                 .map(|(i, inst)| {
+                    let time_window = model.max_phase_days_for_instance(inst);
                     let mjd_min = inst.t_exp;
                     let mjd_max = inst.t_exp + time_window * (1.0 + inst.z);
                     let obs_indices = self.survey.query(&inst.coord, mjd_min, mjd_max);

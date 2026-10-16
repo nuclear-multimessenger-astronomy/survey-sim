@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use thiserror::Error;
 
-use crate::types::{Band, TransientInstance};
+use crate::types::{Band, TransientInstance, TransientType};
 
 #[derive(Error, Debug)]
 pub enum LightcurveError {
@@ -51,6 +51,29 @@ pub trait LightcurveModel: Send + Sync {
     /// Whether this model supports batch evaluation (e.g., GPU-vectorized via JAX vmap).
     fn supports_batch(&self) -> bool {
         false
+    }
+
+    /// Maximum rest-frame phase (in days since explosion) over which the model
+    /// is valid and evaluated by the pipeline. Defaults to 100.0 days.
+    fn max_phase_days(&self) -> f64 {
+        100.0
+    }
+
+    /// Maximum rest-frame phase for a specific transient type.
+    /// Defaults to `self.max_phase_days()`.
+    fn max_phase_days_for_type(&self, _transient_type: TransientType) -> f64 {
+        self.max_phase_days()
+    }
+
+    /// Maximum rest-frame phase for a specific transient instance.
+    /// Checks `instance.model_params["max_phase_days"]` first, then falls back
+    /// to `self.max_phase_days_for_type(instance.transient_type)`.
+    fn max_phase_days_for_instance(&self, instance: &TransientInstance) -> f64 {
+        instance
+            .model_params
+            .get("max_phase_days")
+            .copied()
+            .unwrap_or_else(|| self.max_phase_days_for_type(instance.transient_type))
     }
 
     /// Evaluate multiple transients in a single batch call.

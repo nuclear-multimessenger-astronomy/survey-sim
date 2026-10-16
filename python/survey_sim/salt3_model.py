@@ -38,7 +38,7 @@ class FiestaSALT3Model:
         Rest-frame time grid in days since peak. Default: -20 to +50, 200 points.
     """
 
-    def __init__(self, filters=None, band_map=None, times_grid=None):
+    def __init__(self, filters=None, band_map=None, times_grid=None, max_phase_days=70.0):
         if band_map is None:
             band_map = ZTF_SALT3_BANDS
         if filters is None:
@@ -46,6 +46,7 @@ class FiestaSALT3Model:
         self.band_map = band_map
         self.survey_filters = filters
         self.salt3_filters = [band_map[f] for f in filters]
+        self.max_phase_days = float(max_phase_days)
 
         # Register any missing bandpasses from sncosmo
         for filt in self.salt3_filters:
@@ -176,9 +177,12 @@ class FiestaSALT3Model:
         for salt3_filt, survey_band in zip(self.salt3_filters, self.survey_filters):
             if salt3_filt not in model_mags:
                 continue
+            t_max_rel = min(float(model_times[-1]), self.max_phase_days - t0_offset)
+            out_of_bounds = (obs_rest_days < float(model_times[0])) | (obs_rest_days > t_max_rel)
             grid_mags = np.asarray(model_mags[salt3_filt], dtype=np.float64)
             interp_mags = np.interp(obs_rest_days, model_times, grid_mags,
                                      left=99.0, right=99.0)
+            interp_mags = np.where(out_of_bounds, 99.0, interp_mags)
             result_mags[survey_band] = interp_mags.tolist()
 
         # Fill missing bands with 99
@@ -296,8 +300,10 @@ class FiestaSALT3Model:
 
                 # Rest-frame times (fully vectorized)
                 rest_flat = (obs_flat - t_exps[global_trans_idx]) / (1.0 + redshifts[global_trans_idx]) - 17.0
+                t_max_rel = min(float(grid_t[-1]), self.max_phase_days - 17.0)
+                out_of_range = (rest_flat < float(grid_t[0])) | (rest_flat > t_max_rel)
 
-                # Clamp and interpolate on flat arrays
+                # Clamp and interpolate on flat arrays, masking out-of-range phases to 99.0
                 rest_clamped = np.clip(rest_flat, grid_t[0], grid_t[-1])
                 grid_idx = np.clip(np.searchsorted(grid_t, rest_clamped) - 1, 0, T - 2)
                 t0v = grid_t[grid_idx]
@@ -305,8 +311,6 @@ class FiestaSALT3Model:
                 dt = np.where((t1v - t0v) == 0, 1.0, t1v - t0v)
                 w = (rest_clamped - t0v) / dt
 
-                # Interpolate per band (flat indexing into 2D grid_mags)
-                # Clamped interpolation: values outside grid get edge values
                 interp_flat = {}
                 for salt3_filt, survey_band in zip(self.salt3_filters, self.survey_filters):
                     if salt3_filt not in model_mags_np:
@@ -314,7 +318,7 @@ class FiestaSALT3Model:
                     gm = model_mags_np[salt3_filt]  # (n_chunk, T)
                     m0 = gm[local_trans_idx, grid_idx]
                     m1 = gm[local_trans_idx, np.minimum(grid_idx + 1, T - 1)]
-                    mags = m0 + w * (m1 - m0)
+                    mags = np.where(out_of_range, 99.0, m0 + w * (m1 - m0))
                     interp_flat[survey_band] = mags
 
                 # Scatter flat results into global flat arrays
@@ -417,13 +421,18 @@ class FiestaSALT3Model:
                         (obs_t - t_exps[global_idx]) / (1.0 + redshifts[global_idx]) - 17.0
                     )
 
+                t_max_rel = min(float(grid_t[-1]), self.max_phase_days - 17.0)
                 obs_clamped = np.clip(obs_rest_padded, grid_t[0], grid_t[-1])
                 idx = np.clip(np.searchsorted(grid_t, obs_clamped) - 1, 0, T - 2)
                 t0_vals = grid_t[idx]
                 t1_vals = grid_t[np.minimum(idx + 1, T - 1)]
                 dt = np.where((t1_vals - t0_vals) == 0, 1.0, t1_vals - t0_vals)
                 w = (obs_clamped - t0_vals) / dt
-                out_of_range = np.isnan(obs_rest_padded)
+                out_of_range = (
+                    np.isnan(obs_rest_padded)
+                    | (obs_rest_padded < float(grid_t[0]))
+                    | (obs_rest_padded > t_max_rel)
+                )
 
                 interp_results = {}
                 for salt3_filt, survey_band in zip(self.salt3_filters, self.survey_filters):
