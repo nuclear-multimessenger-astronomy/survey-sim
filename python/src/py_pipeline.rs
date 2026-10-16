@@ -260,9 +260,8 @@ fn build_photometry_from_eval(
             continue;
         }
 
-        // SNR = 5 * 10^(0.4 * (depth - mag))
-        let snr = 5.0 * 10f64.powf(0.4 * (depth - model_mag));
-        let mag_err = 1.0857362 / snr;
+        let snr = survey_sim::detection::snr_from_depth(model_mag, depth);
+        let mag_err = survey_sim::detection::mag_error_from_snr(snr);
 
         if snr >= snr_thresh {
             // Detection: add noise and record
