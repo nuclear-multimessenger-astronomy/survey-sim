@@ -523,6 +523,97 @@ impl PopulationGenerator for SupernovaIbcPopulation {
     }
 }
 
+/// Type IIb Supernova population generator with early shock cooling.
+///
+/// Stripped-envelope core-collapse supernovae retaining only a thin hydrogen
+/// envelope ($M_\mathrm{env} \sim 0.01\text{--}0.3\,M_\odot$, $R_\mathrm{env} \sim 30\text{--}500\,R_\odot$).
+/// The early shock-cooling phase produces a rapid, blue transient peak lasting
+/// 1–5 days that serves as a primary false positive / imposter for kilonova searches
+/// (Barna et al. 2025; Salafia et al. 2026).
+///
+/// Model parameters include Piro (2021) / FiestaEM `ShockCoolingModel` physical
+/// parameters:
+/// - `log10_Menv`: envelope mass $\log_{10}(M_\mathrm{env}/M_\odot)$
+/// - `log10_Renv`: progenitor radius $\log_{10}(R_\mathrm{env}/R_\odot)$
+/// - `log10_Ee`: shock explosion energy $\log_{10}(E_e/\mathrm{erg})$
+pub struct SupernovaIIbPopulation {
+    /// Volumetric rate in Gpc^-3 yr^-1 (default: 1200.0, ~12% of CCSNe).
+    pub rate: f64,
+    /// Maximum redshift (default: 0.15).
+    pub z_max: f64,
+    /// Peak absolute magnitude of early shock cooling emission (default: -16.5).
+    pub peak_abs_mag: f64,
+    /// MJD range for explosion times.
+    pub mjd_min: f64,
+    pub mjd_max: f64,
+    /// Cosmology.
+    pub cosmology: Cosmology,
+}
+
+impl SupernovaIIbPopulation {
+    pub fn new(rate: f64, z_max: f64, peak_abs_mag: f64, mjd_min: f64, mjd_max: f64) -> Self {
+        Self {
+            rate,
+            z_max,
+            peak_abs_mag,
+            mjd_min,
+            mjd_max,
+            cosmology: Cosmology::default(),
+        }
+    }
+}
+
+impl PopulationGenerator for SupernovaIIbPopulation {
+    fn generate(&self, n: usize, rng: &mut dyn rand::RngCore) -> Vec<TransientInstance> {
+        let envelope = distributions::max_dvdz(self.z_max, &self.cosmology);
+        let mut instances = Vec::with_capacity(n);
+        for _ in 0..n {
+            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
+            let d_l = self.cosmology.luminosity_distance(z);
+            let (ra, dec) = sample_isotropic_sky(rng);
+            let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
+
+            let mut params = HashMap::new();
+            // Extended thin hydrogen envelope mass: 0.01 - 0.3 M_sun (log10: -2.0 to -0.5)
+            params.insert("log10_Menv".to_string(), sample_log_uniform(0.01, 0.30, rng).log10());
+            // Extended progenitor radius: 30 - 500 R_sun (log10: 1.48 to 2.70)
+            params.insert("log10_Renv".to_string(), sample_log_uniform(30.0, 500.0, rng).log10());
+            // Shock explosion energy: ~1e51 erg (log10: 50.7 to 51.3)
+            params.insert(
+                "log10_Ee".to_string(),
+                sample_gaussian_clamped(51.0, 0.2, 50.5, 51.5, rng),
+            );
+
+            instances.push(TransientInstance {
+                coord: SkyCoord::new(ra, dec),
+                z,
+                d_l,
+                t_exp,
+                peak_abs_mag: sample_gaussian_clamped(
+                    self.peak_abs_mag,
+                    0.8,
+                    self.peak_abs_mag - 2.5,
+                    self.peak_abs_mag + 2.5,
+                    rng,
+                ),
+                transient_type: TransientType::SupernovaIIb,
+                model_params: params,
+                mw_extinction_av: 0.02,
+                host_extinction_av: sample_gaussian_clamped(0.2, 0.3, 0.0, 3.0, rng),
+            });
+        }
+        instances
+    }
+
+    fn volumetric_rate(&self) -> f64 {
+        self.rate
+    }
+
+    fn transient_type(&self) -> TransientType {
+        TransientType::SupernovaIIb
+    }
+}
+
 /// TDE population generator.
 ///
 /// When `use_luminosity_function` is true, peak absolute magnitudes are drawn

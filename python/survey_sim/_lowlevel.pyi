@@ -24,6 +24,9 @@ class SupernovaIaPopulation:
 class SupernovaIIPopulation:
     def __init__(self, rate: float = 70000.0, z_max: float = 0.5, peak_abs_mag: float = -17.0) -> None: ...
 
+class SupernovaIIbPopulation:
+    def __init__(self, rate: float = 1200.0, z_max: float = 0.15, peak_abs_mag: float = -16.5) -> None: ...
+
 class TdePopulation:
     def __init__(self, rate: float = 100.0, z_max: float = 0.5, peak_abs_mag: float = -20.0) -> None: ...
 

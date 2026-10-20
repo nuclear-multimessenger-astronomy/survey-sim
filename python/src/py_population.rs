@@ -197,6 +197,34 @@ impl PySupernovaIIPopulation {
     }
 }
 
+/// Python wrapper for SupernovaIIbPopulation.
+#[pyclass]
+#[pyo3(name = "SupernovaIIbPopulation")]
+pub struct PySupernovaIIbPopulation {
+    pub(crate) rate: f64,
+    pub(crate) z_max: f64,
+    pub(crate) peak_abs_mag: f64,
+}
+
+#[pymethods]
+impl PySupernovaIIbPopulation {
+    #[new]
+    #[pyo3(signature = (rate=1200.0, z_max=0.15, peak_abs_mag=-16.5))]
+    fn new(rate: f64, z_max: f64, peak_abs_mag: f64) -> Self {
+        Self {
+            rate,
+            z_max,
+            peak_abs_mag,
+        }
+    }
+}
+
+impl PySupernovaIIbPopulation {
+    pub fn to_generator(&self, mjd_min: f64, mjd_max: f64) -> SupernovaIIbPopulation {
+        SupernovaIIbPopulation::new(self.rate, self.z_max, self.peak_abs_mag, mjd_min, mjd_max)
+    }
+}
+
 /// Python wrapper for TdePopulation.
 #[pyclass]
 #[pyo3(name = "TdePopulation")]
@@ -399,6 +427,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFixedBu2026KilonovaPopulation>()?;
     m.add_class::<PySupernovaIaPopulation>()?;
     m.add_class::<PySupernovaIIPopulation>()?;
+    m.add_class::<PySupernovaIIbPopulation>()?;
     m.add_class::<PyTdePopulation>()?;
     m.add_class::<PyFbotPopulation>()?;
     m.add_class::<PyGrbPopulation>()?;
