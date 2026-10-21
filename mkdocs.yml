@@ -48,6 +48,7 @@ nav:
   - Examples:
     - Kilonovae: examples/kilonova.md
     - Type Ia Supernovae: examples/snia.md
+    - Type IIb Supernovae (Shock Cooling): models/supernova_iib.md
     - Tidal Disruption Events: examples/tde.md
     - Fast Blue Optical Transients: examples/fbot.md
     - GRB Afterglows: examples/grb_afterglow.md

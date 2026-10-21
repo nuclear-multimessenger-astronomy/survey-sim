@@ -109,6 +109,16 @@ class MyModel:
         return (times, {"g": mags_g, "r": mags_r})
 ```
 
+### FiestaShockCoolingModel
+
+Built-in analytical model adapter implementing the Piro (2021) piecewise shock-cooling solution for Type IIb supernovae. Wraps fiestaEM / JAX when installed, with automatic fallback to vectorized NumPy / pure-Python:
+
+```python
+from survey_sim.fiesta_shock_cooling_model import FiestaShockCoolingModel
+
+model = FiestaShockCoolingModel(filters=["g", "r", "i"])
+```
+
 !!! warning "Performance"
     Python callback models run sequentially because they require the GIL. For large simulations (>1000 transients), prefer Rust-native models.
 
