@@ -117,8 +117,8 @@ class TestSimulationReproducibility(unittest.TestCase):
             out2 = pathlib.Path(td) / "sim_result_2.json"
             
             # Save both live results and load them back
-            save_result(live_result_1, out1)
-            save_result(live_result_2, out2)
+            save_result(live_result_1, out1, truncate=False)
+            save_result(live_result_2, out2, truncate=False)
             
             self.assertTrue(out1.exists())
             self.assertTrue(out2.exists())

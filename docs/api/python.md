@@ -97,6 +97,18 @@ SupernovaIIPopulation(rate=70000.0, z_max=0.5, peak_abs_mag=-17.0)
 SupernovaIIbPopulation(rate=1200.0, z_max=0.15, peak_abs_mag=-16.5)
 ```
 
+### `ShockedCocoonPopulation`
+
+```python
+ShockedCocoonPopulation(rate=30.0, z_max=0.30, peak_abs_mag=-16.0)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `rate` | float | 30.0 | Volumetric rate (Gpc\(^{-3}\) yr\(^{-1}\)) |
+| `z_max` | float | 0.30 | Maximum redshift |
+| `peak_abs_mag` | float | -16.0 | Peak absolute magnitude |
+
 ### `TdePopulation`
 
 ```python
@@ -155,6 +167,16 @@ FiestaShockCoolingModel(filters=["g", "r", "i"])
 ```
 
 Analytical shock-cooling light-curve model implementing the Piro (2021) solution for Type IIb supernovae. Evaluated via Python callback or fiestaEM/JAX.
+
+### `FiestaCocoonModel`
+
+```python
+from survey_sim.fiesta_cocoon_model import FiestaCocoonModel
+
+FiestaCocoonModel(filters=["g", "r", "i"])
+```
+
+Analytical model adapter for relativistic shocked cocoons (Piro & Kollmeier 2018; Gottlieb et al. 2018). Evaluated via Python callback or fiestaEM/JAX.
 
 ### Python callback models
 

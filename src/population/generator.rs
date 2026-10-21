@@ -1023,3 +1023,82 @@ impl PopulationGenerator for AfterglowPopulation {
         TransientType::Afterglow
     }
 }
+
+/// Relativistic shocked cocoon cooling emission from choked/structured relativistic jets.
+///
+/// Reference: Gottlieb et al. (2018), Piro & Kollmeier (2018).
+pub struct ShockedCocoonPopulation {
+    /// Volumetric rate in Gpc^-3 yr^-1 (default: ~30.0).
+    pub rate: f64,
+    /// Maximum redshift (default: 0.30).
+    pub z_max: f64,
+    /// Peak absolute magnitude (default: -16.0).
+    pub peak_abs_mag: f64,
+    /// MJD range for explosion times.
+    pub mjd_min: f64,
+    pub mjd_max: f64,
+    /// Cosmology.
+    pub cosmology: Cosmology,
+}
+
+impl ShockedCocoonPopulation {
+    pub fn new(rate: f64, z_max: f64, peak_abs_mag: f64, mjd_min: f64, mjd_max: f64) -> Self {
+        Self {
+            rate,
+            z_max,
+            peak_abs_mag,
+            mjd_min,
+            mjd_max,
+            cosmology: Cosmology::default(),
+        }
+    }
+}
+
+impl PopulationGenerator for ShockedCocoonPopulation {
+    fn generate(&self, n: usize, rng: &mut dyn rand::RngCore) -> Vec<TransientInstance> {
+        let envelope = distributions::max_dvdz(self.z_max, &self.cosmology);
+        let mut instances = Vec::with_capacity(n);
+        for _ in 0..n {
+            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
+            let d_l = self.cosmology.luminosity_distance(z);
+            let (ra, dec) = sample_isotropic_sky(rng);
+            let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
+
+            let mut params = HashMap::new();
+            params.insert("log10_mej".to_string(), sample_log_uniform(1e-3, 0.1, rng).log10());
+            params.insert("log10_vej".to_string(), sample_log_uniform(0.10, 0.40, rng).log10());
+            params.insert("eta".to_string(), sample_gaussian_clamped(1.5, 0.5, 1.0, 3.0, rng));
+            params.insert("log10_tshock".to_string(), sample_gaussian_clamped(2.2, 0.4, 1.5, 3.0, rng));
+            params.insert("shocked_fraction".to_string(), sample_gaussian_clamped(0.15, 0.05, 0.05, 0.30, rng));
+            params.insert("cos_theta_cocoon".to_string(), sample_gaussian_clamped(0.85, 0.08, 0.70, 0.98, rng));
+            params.insert("log10_kappa".to_string(), sample_gaussian_clamped(-0.47, 0.15, -1.0, 0.5, rng));
+
+            instances.push(TransientInstance {
+                coord: SkyCoord::new(ra, dec),
+                z,
+                d_l,
+                t_exp,
+                peak_abs_mag: sample_gaussian_clamped(
+                    self.peak_abs_mag,
+                    0.8,
+                    self.peak_abs_mag - 2.5,
+                    self.peak_abs_mag + 2.5,
+                    rng,
+                ),
+                transient_type: TransientType::ShockedCocoon,
+                model_params: params,
+                mw_extinction_av: 0.02,
+                host_extinction_av: sample_gaussian_clamped(0.15, 0.2, 0.0, 2.0, rng),
+            });
+        }
+        instances
+    }
+
+    fn volumetric_rate(&self) -> f64 {
+        self.rate
+    }
+
+    fn transient_type(&self) -> TransientType {
+        TransientType::ShockedCocoon
+    }
+}

@@ -112,6 +112,22 @@ Type IIb supernovae with early shock-cooling optical/UV flash from stripped hydr
 pop = SupernovaIIbPopulation(rate=1200.0, z_max=0.15, peak_abs_mag=-16.5)
 ```
 
+### ShockedCocoonPopulation
+
+Relativistic shocked cocoons from choked or emerging jets in compact mergers or core collapse (Piro & Kollmeier 2018; Gottlieb et al. 2018).
+
+| Parameter | Distribution | Range |
+|-----------|-------------|-------|
+| `log10_mej` | Uniform | \([-3.0, -1.0]\) \(M_\odot\) |
+| `log10_vej` | Uniform | \([-1.0, -0.4]\) \(c\) |
+| `eta` | Gaussian | \(\mathcal{N}(1.5, 0.5)\) |
+| `log10_tshock` | Gaussian | \(\mathcal{N}(2.2, 0.4)\) s |
+| `peak_abs_mag` | Fixed / Default | \(-16.0\) mag |
+
+```python
+pop = ShockedCocoonPopulation(rate=30.0, z_max=0.30, peak_abs_mag=-16.0)
+```
+
 ### TdePopulation
 
 Tidal disruption events.
