@@ -13,6 +13,7 @@ from survey_sim.survey_sim import (
     SupernovaIIPopulation,
     SupernovaIIbPopulation,
     SupernovaIaxPopulation,
+    CsmInteractionPopulation,
     ShockedCocoonPopulation,
     TdePopulation,
     FbotPopulation,
@@ -45,6 +46,11 @@ except ImportError:
 
 try:
     from survey_sim.fiesta_cocoon_model import FiestaCocoonModel
+except ImportError:
+    pass
+
+try:
+    from survey_sim.fiesta_csm_model import FiestaCsmModel
 except ImportError:
     pass
 
@@ -196,6 +202,7 @@ __all__ = [
     "SupernovaIIPopulation",
     "SupernovaIIbPopulation",
     "SupernovaIaxPopulation",
+    "CsmInteractionPopulation",
     "ShockedCocoonPopulation",
     "TdePopulation",
     "FbotPopulation",
@@ -207,6 +214,7 @@ __all__ = [
     "ParametricModel",
     "FiestaShockCoolingModel",
     "FiestaCocoonModel",
+    "FiestaCsmModel",
     "DetectionCriteria",
     "DetectionResult",
     "DetectedSource",

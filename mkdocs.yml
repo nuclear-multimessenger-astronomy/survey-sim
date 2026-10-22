@@ -50,6 +50,7 @@ nav:
     - Type Ia Supernovae: examples/snia.md
     - Type IIb Supernovae (Shock Cooling): models/supernova_iib.md
     - Subluminous SN Iax: models/supernova_iax.md
+    - CSM Interaction Transients: models/csm_interaction.md
     - Relativistic Shocked Cocoons: models/shocked_cocoon.md
     - Tidal Disruption Events: examples/tde.md
     - Fast Blue Optical Transients: examples/fbot.md

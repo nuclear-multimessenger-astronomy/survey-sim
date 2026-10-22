@@ -129,6 +129,16 @@ from survey_sim.fiesta_cocoon_model import FiestaCocoonModel
 model = FiestaCocoonModel(filters=["g", "r", "i"])
 ```
 
+### FiestaCsmModel
+
+Built-in analytical adapter for circumstellar interaction transients (Chevalier & Irwin 2011; Chatzopoulos et al. 2012). Wraps fiestaEM `CSMInteractionModel` when available, with an algebraic diffusion fallback:
+
+```python
+from survey_sim.fiesta_csm_model import FiestaCsmModel
+
+model = FiestaCsmModel(filters=["g", "r", "i"])
+```
+
 !!! warning "Performance"
     Python callback models run sequentially because they require the GIL. For large simulations (>1000 transients), prefer Rust-native models.
 

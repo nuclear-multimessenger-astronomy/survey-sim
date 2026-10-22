@@ -48,6 +48,7 @@ fn default_model_for_type(
         TransientType::SupernovaIbc => SviModelName::Villar,
         TransientType::SupernovaIIb => SviModelName::Villar,
         TransientType::SupernovaIax => SviModelName::Villar,
+        TransientType::CsmInteraction => SviModelName::Villar,
         TransientType::ShockedCocoon => SviModelName::Bazin,
         TransientType::Tde => SviModelName::Tde,
         TransientType::Fbot => SviModelName::Bazin,
