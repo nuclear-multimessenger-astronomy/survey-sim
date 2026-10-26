@@ -119,6 +119,16 @@ from survey_sim.fiesta_shock_cooling_model import FiestaShockCoolingModel
 model = FiestaShockCoolingModel(filters=["g", "r", "i"])
 ```
 
+### FiestaCocoonModel
+
+Built-in analytical adapter for relativistic shocked cocoons (Piro & Kollmeier 2018; Gottlieb et al. 2018). Wraps fiestaEM `ShockedCocoonModel` when JAX is installed, with an algebraic analytical fallback:
+
+```python
+from survey_sim.fiesta_cocoon_model import FiestaCocoonModel
+
+model = FiestaCocoonModel(filters=["g", "r", "i"])
+```
+
 !!! warning "Performance"
     Python callback models run sequentially because they require the GIL. For large simulations (>1000 transients), prefer Rust-native models.
 
