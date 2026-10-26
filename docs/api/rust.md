@@ -100,7 +100,7 @@ impl SimulationPipeline {
 
 ### `efficiency`
 
-N-dimensional efficiency grids and rate recovery.
+N-dimensional efficiency grids, rate recovery, and imposter analysis.
 
 ```rust
 pub struct EfficiencyGrid { /* N-dimensional binning */ }
@@ -109,6 +109,34 @@ impl EfficiencyGrid {
     pub fn efficiency_at(&self, values: &[f64]) -> f64;
     pub fn marginalize_over(&self, axis: usize) -> Vec<(f64, f64)>;
 }
+```
+
+#### `imposters`
+
+Kilonova imposter detection efficiency and rate recovery analysis.
+
+```rust
+pub struct ImposterPopulation { /* name, rate, expected_detections, rate_uncertainty_frac */ }
+pub struct KilonovaSignal { /* name, volumetric_rate, expected_detections, effective_vt, overall_efficiency */ }
+pub struct KilonovaImposterAnalysis {
+    pub kilonova: KilonovaSignal,
+    pub imposters: Vec<ImposterPopulation>,
+    pub metrics: ImposterMetrics,
+    pub rate_recovery: ContaminatedRateRecovery,
+    pub followup_budget: Option<FollowupBudgetMetrics>,
+}
+
+impl KilonovaImposterAnalysis {
+    pub fn new(kilonova: KilonovaSignal, imposters: Vec<ImposterPopulation>) -> Self;
+    pub fn with_followup_budget(self, budget: f64) -> Self;
+}
+
+pub fn analyze_simulation_imposters(
+    result: &SimulationResult,
+    kn_type: &str,
+    imposter_types: &[&str],
+    imposter_uncertainty_frac: f64,
+) -> Option<KilonovaImposterAnalysis>;
 ```
 
 ### `instrument`

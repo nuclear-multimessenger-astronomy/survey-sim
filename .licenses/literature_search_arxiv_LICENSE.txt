@@ -1,0 +1,2 @@
+Notice recorded on 2026-10-20T14:12:00-05:00:
+Please check arXiv API terms of use at https://info.arxiv.org/help/api/index.html and always check the license of the papers retrieved by this skill for any restrictions.

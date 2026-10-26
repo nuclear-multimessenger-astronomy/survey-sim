@@ -35,6 +35,7 @@ from survey_sim.survey_sim import (
     CoverageResult,
     CoverageResult3D,
     TdeRateForecast,
+    KilonovaImposterAnalysis,
     blackbody_k_correction,
     blackbody_k_correction_instrument,
 )
@@ -224,6 +225,7 @@ __all__ = [
     "TooSimulationResult",
     "run_too_simulation",
     "TdeRateForecast",
+    "KilonovaImposterAnalysis",
     "blackbody_k_correction",
     "blackbody_k_correction_instrument",
 ]
