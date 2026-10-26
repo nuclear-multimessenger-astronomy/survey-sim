@@ -109,6 +109,18 @@ SupernovaIaxPopulation(rate=3000.0, z_max=0.20, peak_abs_mag=-15.0)
 | `z_max` | float | 0.20 | Maximum redshift |
 | `peak_abs_mag` | float | -15.0 | Peak absolute magnitude |
 
+### `CsmInteractionPopulation`
+
+```python
+CsmInteractionPopulation(rate=250.0, z_max=0.25, peak_abs_mag=-17.5)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `rate` | float | 250.0 | Volumetric rate (Gpc\(^{-3}\) yr\(^{-1}\)) |
+| `z_max` | float | 0.25 | Maximum redshift |
+| `peak_abs_mag` | float | -17.5 | Peak absolute magnitude |
+
 ### `ShockedCocoonPopulation`
 
 ```python
@@ -189,6 +201,16 @@ FiestaCocoonModel(filters=["g", "r", "i"])
 ```
 
 Analytical model adapter for relativistic shocked cocoons (Piro & Kollmeier 2018; Gottlieb et al. 2018). Evaluated via Python callback or fiestaEM/JAX.
+
+### `FiestaCsmModel`
+
+```python
+from survey_sim.fiesta_csm_model import FiestaCsmModel
+
+FiestaCsmModel(filters=["g", "r", "i"])
+```
+
+Analytical model adapter for dense circumstellar interaction transients (Chevalier & Irwin 2011; Chatzopoulos et al. 2012). Evaluated via Python callback or fiestaEM/JAX.
 
 ### Python callback models
 

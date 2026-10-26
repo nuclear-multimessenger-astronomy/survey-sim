@@ -1195,3 +1195,91 @@ impl PopulationGenerator for SupernovaIaxPopulation {
         TransientType::SupernovaIax
     }
 }
+
+/// Supernovae interacting with dense circumstellar media (CSM).
+///
+/// Fast, luminous optical transients powered by shock kinetic energy conversion
+/// in dense circumstellar winds or shells (e.g., SNe Ibn, fast Type IIn).
+///
+/// References: Chevalier & Irwin (2011), Chatzopoulos et al. (2012).
+pub struct CsmInteractionPopulation {
+    /// Volumetric rate in Gpc^-3 yr^-1 (default: ~250.0).
+    pub rate: f64,
+    /// Maximum redshift (default: 0.25).
+    pub z_max: f64,
+    /// Peak absolute magnitude (default: -17.5).
+    pub peak_abs_mag: f64,
+    /// MJD range for explosion times.
+    pub mjd_min: f64,
+    pub mjd_max: f64,
+    /// Cosmology.
+    pub cosmology: Cosmology,
+}
+
+impl CsmInteractionPopulation {
+    pub fn new(rate: f64, z_max: f64, peak_abs_mag: f64, mjd_min: f64, mjd_max: f64) -> Self {
+        Self {
+            rate,
+            z_max,
+            peak_abs_mag,
+            mjd_min,
+            mjd_max,
+            cosmology: Cosmology::default(),
+        }
+    }
+}
+
+impl PopulationGenerator for CsmInteractionPopulation {
+    fn generate(&self, n: usize, rng: &mut dyn rand::RngCore) -> Vec<TransientInstance> {
+        let envelope = distributions::max_dvdz(self.z_max, &self.cosmology);
+        let mut instances = Vec::with_capacity(n);
+        for _ in 0..n {
+            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
+            let d_l = self.cosmology.luminosity_distance(z);
+            let (ra, dec) = sample_isotropic_sky(rng);
+            let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
+
+            let mut params = HashMap::new();
+            params.insert("log10_mej".to_string(), sample_uniform(-0.3, 0.7, rng));
+            params.insert("log10_csm_mass".to_string(), sample_uniform(-1.5, 0.2, rng));
+            params.insert("log10_vej".to_string(), sample_uniform(3.7, 4.2, rng));
+            params.insert("eta".to_string(), sample_gaussian_clamped(1.5, 0.4, 0.5, 2.5, rng));
+            params.insert("log10_rho".to_string(), sample_gaussian_clamped(-13.0, 0.5, -14.5, -11.5, rng));
+            params.insert("log10_r0".to_string(), sample_gaussian_clamped(1.0, 0.3, 0.5, 1.8, rng));
+            params.insert("log10_kappa".to_string(), sample_gaussian_clamped(-0.47, 0.1, -0.8, -0.2, rng));
+
+            // Villar parameter equivalents for parametric fitting fallback
+            params.insert("t_rise".to_string(), sample_uniform(2.0, 8.0, rng));
+            params.insert("t_fall".to_string(), sample_uniform(8.0, 25.0, rng));
+            params.insert("beta".to_string(), sample_uniform(0.01, 0.05, rng));
+            params.insert("gamma".to_string(), sample_uniform(5.0, 20.0, rng));
+
+            instances.push(TransientInstance {
+                coord: SkyCoord::new(ra, dec),
+                z,
+                d_l,
+                t_exp,
+                peak_abs_mag: sample_gaussian_clamped(
+                    self.peak_abs_mag,
+                    0.8,
+                    -20.0,
+                    -15.0,
+                    rng,
+                ),
+                transient_type: TransientType::CsmInteraction,
+                model_params: params,
+                mw_extinction_av: 0.02,
+                host_extinction_av: sample_gaussian_clamped(0.15, 0.25, 0.0, 2.5, rng),
+            });
+        }
+        instances
+    }
+
+    fn volumetric_rate(&self) -> f64 {
+        self.rate
+    }
+
+    fn transient_type(&self) -> TransientType {
+        TransientType::CsmInteraction
+    }
+}

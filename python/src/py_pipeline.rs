@@ -100,6 +100,8 @@ impl PySimulationPipeline {
                 rust_populations.push(Box::new(sniib.to_generator(mjd_min, mjd_max)));
             } else if let Ok(sniax) = pop_obj.extract::<PyRef<PySupernovaIaxPopulation>>(py) {
                 rust_populations.push(Box::new(sniax.to_generator(mjd_min, mjd_max)));
+            } else if let Ok(csm) = pop_obj.extract::<PyRef<PyCsmInteractionPopulation>>(py) {
+                rust_populations.push(Box::new(csm.to_generator(mjd_min, mjd_max)));
             } else if let Ok(cocoon) = pop_obj.extract::<PyRef<PyShockedCocoonPopulation>>(py) {
                 rust_populations.push(Box::new(cocoon.to_generator(mjd_min, mjd_max)));
             } else if let Ok(tde) = pop_obj.extract::<PyRef<PyTdePopulation>>(py) {

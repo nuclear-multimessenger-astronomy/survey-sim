@@ -129,6 +129,25 @@ Subluminous Type Iax white dwarf deflagrations with partial burning (Foley et al
 pop = SupernovaIaxPopulation(rate=3000.0, z_max=0.20, peak_abs_mag=-15.0)
 ```
 
+### CsmInteractionPopulation
+
+Fast circumstellar interaction transients and interacting supernovae (Chevalier & Irwin 2011; Chatzopoulos et al. 2012).
+
+| Parameter | Distribution | Range |
+|-----------|-------------|-------|
+| `log10_mej` | Uniform | \([-0.3, 0.7]\) \(M_\odot\) |
+| `log10_csm_mass` | Uniform | \([-1.5, 0.2]\) \(M_\odot\) |
+| `log10_vej` | Uniform | \([3.7, 4.2]\) km/s |
+| `eta` | Gaussian | \(\mathcal{N}(1.5, 0.4)\) |
+| `log10_rho` | Gaussian | \(\mathcal{N}(-13.0, 0.5)\) \(\mathrm{g\,cm}^{-3}\) |
+| `log10_r0` | Gaussian | \(\mathcal{N}(1.0, 0.3)\) AU |
+| `log10_kappa` | Gaussian | \(\mathcal{N}(-0.47, 0.1)\) \(\mathrm{cm}^2\,\mathrm{g}^{-1}\) |
+| `peak_abs_mag` | Gaussian | \(\mathcal{N}(-17.5, 0.8)\) mag |
+
+```python
+pop = CsmInteractionPopulation(rate=250.0, z_max=0.25, peak_abs_mag=-17.5)
+```
+
 ### ShockedCocoonPopulation
 
 Relativistic shocked cocoons from choked or emerging jets in compact mergers or core collapse (Piro & Kollmeier 2018; Gottlieb et al. 2018).
