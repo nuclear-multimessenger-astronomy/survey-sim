@@ -47,6 +47,7 @@ nav:
     - Rust Crate: api/rust.md
   - Examples:
     - Kilonovae: examples/kilonova.md
+    - Kilonova Imposters: examples/kilonova_imposters.md
     - Type Ia Supernovae: examples/snia.md
     - Type IIb Supernovae (Shock Cooling): models/supernova_iib.md
     - Subluminous SN Iax: models/supernova_iax.md
