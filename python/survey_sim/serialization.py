@@ -26,19 +26,29 @@ def _truncate_payload(obj: Any, time_decimals: int = 3, mag_decimals: int = 3, p
             ## skip rate_summaries
             if k == "rate_summaries":
                 truncated_dict[k] = v
-            # Apply decimal places to time-related floats
-            if isinstance(v, float) and ('time' in k or 't_exp' in k):
-                truncated_dict[k] = round(v, time_decimals)
-            # Apply decimal places to magnitude/depth-related floats
-            elif isinstance(v, float) and ('mag' in k or 'depth' in k or 'photometry_errs' in k):
-                truncated_dict[k] = round(v, mag_decimals)
+            # Apply decimal places to time-related floats or lists
+            elif 'time' in k or 't_exp' in k:
+                if isinstance(v, float):
+                    truncated_dict[k] = round(v, time_decimals)
+                elif isinstance(v, (list, tuple)):
+                    truncated_dict[k] = [round(x, time_decimals) if isinstance(x, float) else x for x in v]
+                else:
+                    truncated_dict[k] = _truncate_payload(v, time_decimals, mag_decimals, params_decimals)
+            # Apply decimal places to magnitude/depth-related floats or lists
+            elif 'mag' in k or 'depth' in k or 'photometry_errs' in k or 'err' in k:
+                if isinstance(v, float):
+                    truncated_dict[k] = round(v, mag_decimals)
+                elif isinstance(v, (list, tuple)):
+                    truncated_dict[k] = [round(x, mag_decimals) if isinstance(x, float) else x for x in v]
+                else:
+                    truncated_dict[k] = _truncate_payload(v, time_decimals, mag_decimals, params_decimals)
             # Recursively process nested dictionaries or lists
             else:
-                truncated_dict[k] = _truncate_payload(v, time_decimals, mag_decimals)
+                truncated_dict[k] = _truncate_payload(v, time_decimals, mag_decimals, params_decimals)
         return truncated_dict
         
     elif isinstance(obj, list):
-        return [_truncate_payload(item, time_decimals, mag_decimals) for item in obj]
+        return [_truncate_payload(item, time_decimals, mag_decimals, params_decimals) for item in obj]
         
     return obj
 
