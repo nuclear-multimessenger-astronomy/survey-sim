@@ -253,6 +253,34 @@ impl PyShockedCocoonPopulation {
     }
 }
 
+/// Python wrapper for SupernovaIaxPopulation.
+#[pyclass]
+#[pyo3(name = "SupernovaIaxPopulation")]
+pub struct PySupernovaIaxPopulation {
+    pub(crate) rate: f64,
+    pub(crate) z_max: f64,
+    pub(crate) peak_abs_mag: f64,
+}
+
+#[pymethods]
+impl PySupernovaIaxPopulation {
+    #[new]
+    #[pyo3(signature = (rate=3000.0, z_max=0.20, peak_abs_mag=-15.0))]
+    fn new(rate: f64, z_max: f64, peak_abs_mag: f64) -> Self {
+        Self {
+            rate,
+            z_max,
+            peak_abs_mag,
+        }
+    }
+}
+
+impl PySupernovaIaxPopulation {
+    pub fn to_generator(&self, mjd_min: f64, mjd_max: f64) -> survey_sim::population::generator::SupernovaIaxPopulation {
+        survey_sim::population::generator::SupernovaIaxPopulation::new(self.rate, self.z_max, self.peak_abs_mag, mjd_min, mjd_max)
+    }
+}
+
 /// Python wrapper for TdePopulation.
 #[pyclass]
 #[pyo3(name = "TdePopulation")]
@@ -456,6 +484,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySupernovaIaPopulation>()?;
     m.add_class::<PySupernovaIIPopulation>()?;
     m.add_class::<PySupernovaIIbPopulation>()?;
+    m.add_class::<PySupernovaIaxPopulation>()?;
     m.add_class::<PyShockedCocoonPopulation>()?;
     m.add_class::<PyTdePopulation>()?;
     m.add_class::<PyFbotPopulation>()?;

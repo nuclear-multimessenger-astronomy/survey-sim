@@ -97,6 +97,18 @@ SupernovaIIPopulation(rate=70000.0, z_max=0.5, peak_abs_mag=-17.0)
 SupernovaIIbPopulation(rate=1200.0, z_max=0.15, peak_abs_mag=-16.5)
 ```
 
+### `SupernovaIaxPopulation`
+
+```python
+SupernovaIaxPopulation(rate=3000.0, z_max=0.20, peak_abs_mag=-15.0)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `rate` | float | 3000.0 | Volumetric rate (Gpc\(^{-3}\) yr\(^{-1}\)) |
+| `z_max` | float | 0.20 | Maximum redshift |
+| `peak_abs_mag` | float | -15.0 | Peak absolute magnitude |
+
 ### `ShockedCocoonPopulation`
 
 ```python

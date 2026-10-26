@@ -112,6 +112,23 @@ Type IIb supernovae with early shock-cooling optical/UV flash from stripped hydr
 pop = SupernovaIIbPopulation(rate=1200.0, z_max=0.15, peak_abs_mag=-16.5)
 ```
 
+### SupernovaIaxPopulation
+
+Subluminous Type Iax white dwarf deflagrations with partial burning (Foley et al. 2013; Jha 2017).
+
+| Parameter | Distribution | Range |
+|-----------|-------------|-------|
+| `m_ni` | Uniform | \([0.005, 0.08]\) \(M_\odot\) |
+| `v_ej` | Uniform | \([2000, 6000]\) km/s |
+| `m_ej` | Uniform | \([0.10, 0.50]\) \(M_\odot\) |
+| `t_rise` | Uniform | \([6, 14]\) days |
+| `t_fall` | Uniform | \([12, 25]\) days |
+| `peak_abs_mag` | Gaussian | \(\mathcal{N}(-15.0, 1.0)\) mag |
+
+```python
+pop = SupernovaIaxPopulation(rate=3000.0, z_max=0.20, peak_abs_mag=-15.0)
+```
+
 ### ShockedCocoonPopulation
 
 Relativistic shocked cocoons from choked or emerging jets in compact mergers or core collapse (Piro & Kollmeier 2018; Gottlieb et al. 2018).

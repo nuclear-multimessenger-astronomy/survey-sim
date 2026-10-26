@@ -1102,3 +1102,96 @@ impl PopulationGenerator for ShockedCocoonPopulation {
         TransientType::ShockedCocoon
     }
 }
+
+/// Subluminous Type Iax supernovae (e.g. SN 2002cx, SN 2008ha).
+///
+/// Deflagrations of white dwarfs with partial burning, producing fast-evolving,
+/// subluminous transients with low nickel mass (0.005 - 0.08 M_sun) and low
+/// expansion velocities (2000 - 6000 km/s).
+///
+/// References: Foley et al. (2013), Jha (2017).
+pub struct SupernovaIaxPopulation {
+    /// Volumetric rate in Gpc^-3 yr^-1 (default: ~3000.0, ~15-30% of normal SNIa rate).
+    pub rate: f64,
+    /// Maximum redshift (default: 0.20).
+    pub z_max: f64,
+    /// Peak absolute magnitude (default: -15.0).
+    pub peak_abs_mag: f64,
+    /// MJD range for explosion times.
+    pub mjd_min: f64,
+    pub mjd_max: f64,
+    /// Cosmology.
+    pub cosmology: Cosmology,
+}
+
+impl SupernovaIaxPopulation {
+    pub fn new(rate: f64, z_max: f64, peak_abs_mag: f64, mjd_min: f64, mjd_max: f64) -> Self {
+        Self {
+            rate,
+            z_max,
+            peak_abs_mag,
+            mjd_min,
+            mjd_max,
+            cosmology: Cosmology::default(),
+        }
+    }
+}
+
+impl PopulationGenerator for SupernovaIaxPopulation {
+    fn generate(&self, n: usize, rng: &mut dyn rand::RngCore) -> Vec<TransientInstance> {
+        let envelope = distributions::max_dvdz(self.z_max, &self.cosmology);
+        let mut instances = Vec::with_capacity(n);
+        for _ in 0..n {
+            let z = sample_redshift_volumetric(self.z_max, &self.cosmology, envelope, rng);
+            let d_l = self.cosmology.luminosity_distance(z);
+            let (ra, dec) = sample_isotropic_sky(rng);
+            let t_exp = sample_explosion_time(self.mjd_min, self.mjd_max, rng);
+
+            let mut params = HashMap::new();
+            let m_ni = sample_uniform(0.005, 0.08, rng);
+            let v_ej = sample_uniform(2000.0, 6000.0, rng);
+            let m_ej = sample_uniform(0.10, 0.50, rng);
+            let t_rise = sample_uniform(6.0, 14.0, rng);
+            let t_fall = sample_uniform(12.0, 25.0, rng);
+
+            params.insert("m_ni".to_string(), m_ni);
+            params.insert("v_ej".to_string(), v_ej);
+            params.insert("m_ej".to_string(), m_ej);
+            params.insert("t_rise".to_string(), t_rise);
+            params.insert("t_fall".to_string(), t_fall);
+
+            // Villar parameter equivalents for parametric fitting fallback
+            params.insert("t_rise".to_string(), t_rise);
+            params.insert("t_fall".to_string(), t_fall);
+            params.insert("beta".to_string(), sample_uniform(0.01, 0.04, rng));
+            params.insert("gamma".to_string(), sample_uniform(10.0, 25.0, rng));
+
+            instances.push(TransientInstance {
+                coord: SkyCoord::new(ra, dec),
+                z,
+                d_l,
+                t_exp,
+                peak_abs_mag: sample_gaussian_clamped(
+                    self.peak_abs_mag,
+                    1.0,
+                    -18.0,
+                    -13.0,
+                    rng,
+                ),
+                transient_type: TransientType::SupernovaIax,
+                model_params: params,
+                mw_extinction_av: 0.02,
+                host_extinction_av: sample_gaussian_clamped(0.15, 0.25, 0.0, 2.5, rng),
+            });
+        }
+        instances
+    }
+
+    fn volumetric_rate(&self) -> f64 {
+        self.rate
+    }
+
+    fn transient_type(&self) -> TransientType {
+        TransientType::SupernovaIax
+    }
+}

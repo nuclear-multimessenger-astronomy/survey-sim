@@ -106,6 +106,11 @@ pub fn sample_explosion_time(mjd_min: f64, mjd_max: f64, rng: &mut (impl Rng + ?
     mjd_min + rng.random::<f64>() * (mjd_max - mjd_min)
 }
 
+/// Sample from a uniform distribution in [lo, hi].
+pub fn sample_uniform(lo: f64, hi: f64, rng: &mut (impl Rng + ?Sized)) -> f64 {
+    lo + rng.random::<f64>() * (hi - lo)
+}
+
 /// Sample from a log-uniform distribution in [lo, hi].
 pub fn sample_log_uniform(lo: f64, hi: f64, rng: &mut (impl Rng + ?Sized)) -> f64 {
     let log_lo = lo.ln();
