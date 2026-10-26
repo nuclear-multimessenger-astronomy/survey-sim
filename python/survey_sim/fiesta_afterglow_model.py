@@ -10,10 +10,7 @@ import jax
 import jax.numpy as jnp
 
 from fiesta.inference.lightcurve_model import FluxModel
-
-# Default band mappings for common surveys.
-ZTF_BAND_MAP = {"g": "ztfg", "r": "ztfr", "i": "ztfi"}
-LSST_BAND_MAP = {"u": "lsstu", "g": "lsstg", "r": "lsstr", "i": "lssti", "z": "lsstz", "y": "lssty"}
+from survey_sim.survey_config import ZTF_BAND_MAP, LSST_BAND_MAP, resolve_band_map
 
 # Gamma-ray efficiency for converting E_gamma_iso -> E_kinetic_iso.
 ETA_GAMMA = 0.15
@@ -43,13 +40,11 @@ class FiestaAfterglowModel:
         "logepsB": "log10_epsilon_B",
     }
 
-    def __init__(self, name="blastwave_gaussian_CVAE", band_map=None,
+    def __init__(self, name="blastwave_gaussian_CVAE", survey="ztf", band_map=None,
                  eta=ETA_GAMMA, default_duration=4.0, max_phase_days=100.0):
-        if band_map is None:
-            band_map = ZTF_BAND_MAP
-        self.band_map = band_map
-        self.reverse_map = {v: k for k, v in band_map.items()}
-        fiesta_filters = list(band_map.values())
+        self.band_map = resolve_band_map(survey=survey, band_map=band_map, default_survey="ztf")
+        self.reverse_map = {v: k for k, v in self.band_map.items()}
+        fiesta_filters = list(self.band_map.values())
 
         self.model = FluxModel(name, filters=fiesta_filters)
         self.eta = eta

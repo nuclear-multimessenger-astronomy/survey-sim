@@ -110,6 +110,14 @@ class KilonovaImposterAnalysis:
     uncertainty_inflation_factor: float
     imposter_breakdown: list[tuple[str, float]]
     @staticmethod
+    def for_survey(
+        survey: str = "ztf",
+        volumetric_rate: float = 45.0,
+        signal_name: str = "BNS Kilonova",
+        default_sys_err: float = 0.20,
+        followup_budget: Optional[float] = None,
+    ) -> "KilonovaImposterAnalysis": ...
+    @staticmethod
     def from_counts(
         signal_name: str,
         volumetric_rate: float,

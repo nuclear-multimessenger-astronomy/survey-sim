@@ -8,18 +8,11 @@ import numpy as np
 import jax.numpy as jnp
 
 from fiesta.inference.lightcurve_model import FluxModel
+from survey_sim.survey_config import ZTF_BAND_MAP, LSST_BAND_MAP, resolve_band_map
 
-# Band name mapping: survey-sim short names <-> sncosmo/fiesta filter names.
-_BAND_TO_FIESTA = {
-    "u": "lsstu",
-    "g": "lsstg",
-    "r": "lsstr",
-    "i": "lssti",
-    "z": "lsstz",
-    "y": "lssty",
-}
+# Backward compatibility alias
+_BAND_TO_FIESTA = LSST_BAND_MAP
 _FIESTA_TO_BAND = {v: k for k, v in _BAND_TO_FIESTA.items()}
-
 FIESTA_FILTERS = list(_BAND_TO_FIESTA.values())
 
 
@@ -36,15 +29,22 @@ class FiestaKNModel:
     ----------
     name : str
         Fiesta surrogate name (default ``"Bu2026_MLP"``).
+    survey : str, optional
+        Survey identifier (e.g. ``"ztf"`` or ``"lsst"``/``"rubin"``). Defaults to ``"ztf"``.
     filters : list[str] or None
-        Fiesta filter names. Defaults to all six LSST bands.
+        Explicit list of Fiesta filter names (e.g. ``['ztfg', 'ztfr']``).
+    band_map : dict[str, str] or None
+        Custom mapping from survey short band names to fiesta filter names.
     """
 
-    def __init__(self, name="Bu2026_MLP", filters=None, max_phase_days=25.0):
-        if filters is None:
-            filters = FIESTA_FILTERS
-        self.model = FluxModel(name, filters=filters)
-        self.filters = filters
+    def __init__(self, name="Bu2026_MLP", survey="ztf", filters=None, band_map=None, max_phase_days=25.0):
+        self.band_map = resolve_band_map(
+            survey=survey, band_map=band_map, filters=filters, default_survey="ztf"
+        )
+        self.reverse_map = {v: k for k, v in self.band_map.items()}
+        fiesta_filters = list(self.band_map.values())
+        self.model = FluxModel(name, filters=fiesta_filters)
+        self.filters = fiesta_filters
         self.max_phase_days = float(max_phase_days)
 
     def predict(self, params):
@@ -92,7 +92,7 @@ class FiestaKNModel:
         t_lower = max(0.0, float(model_times[0]))
         out_of_bounds = (obs_rest_days < t_lower) | (obs_rest_days > t_upper)
         result_mags = {}
-        for fiesta_filt, short_band in _FIESTA_TO_BAND.items():
+        for fiesta_filt, short_band in self.reverse_map.items():
             if fiesta_filt not in model_mags:
                 continue
             grid_mags = np.asarray(model_mags[fiesta_filt], dtype=np.float64)
@@ -220,7 +220,7 @@ class FiestaKNModel:
         w = (obs_clamped - t0) / dt
 
         interp_results = {}
-        for fiesta_filt, short_band in _FIESTA_TO_BAND.items():
+        for fiesta_filt, short_band in self.reverse_map.items():
             if fiesta_filt not in model_mags_np:
                 continue
             grid_mags = model_mags_np[fiesta_filt]  # (N, T)

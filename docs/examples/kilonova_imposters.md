@@ -104,6 +104,7 @@ survey = load_ztf_survey(nside=64)
 criteria = DetectionCriteria(min_detections=2, snr_threshold=5.0)
 
 # 2. Build multi-population pipeline
+# Using survey="ztf" automatically configures ZTF filter transmission curves (ztfg, ztfr, ztfi)
 pipeline = SimulationPipeline(
     survey=survey,
     populations=[
@@ -113,7 +114,7 @@ pipeline = SimulationPipeline(
     ],
     models={
         "Kilonova": MetzgerKNModel(),
-        "SupernovaIIb": FiestaShockCoolingModel(filters=["g", "r", "i"]),
+        "SupernovaIIb": FiestaShockCoolingModel(survey="ztf"),
         "FBOT": ParametricModel().with_model("Bazin"),
     },
     detection=criteria,
@@ -135,6 +136,23 @@ print(analysis)
 ```
 
 ### Analytical Forecasts & Serialization
+
+You can construct an imposter analysis directly from built-in survey presets (`"ztf"` or `"lsst"`/`"rubin"`) without having to manually specify detection volumes and imposter rates:
+
+```python
+from survey_sim import KilonovaImposterAnalysis
+
+# 1. Quick survey-tuned analysis (defaults to LVK median rate of 45 Gpc^-3 yr^-1)
+ztf_analysis = KilonovaImposterAnalysis.for_survey("ztf", volumetric_rate=45.0)
+print(f"ZTF Purity: {ztf_analysis.purity:.1%}")
+print(f"ZTF Expected KNe: {ztf_analysis.signal_detections:.2f}")
+
+lsst_analysis = KilonovaImposterAnalysis.for_survey("lsst", volumetric_rate=45.0)
+print(f"Rubin LSST Purity: {lsst_analysis.purity:.1%}")
+print(f"Rubin LSST Expected KNe: {lsst_analysis.signal_detections:.1f}")
+```
+
+Or provide custom event forecasts:
 
 ```python
 from survey_sim import KilonovaImposterAnalysis

@@ -39,6 +39,12 @@ from survey_sim.survey_sim import (
     blackbody_k_correction,
     blackbody_k_correction_instrument,
 )
+from survey_sim.survey_config import (
+    ZTF_BAND_MAP,
+    LSST_BAND_MAP,
+    SURVEY_BAND_MAPS,
+    resolve_band_map,
+)
 
 try:
     from survey_sim.fiesta_shock_cooling_model import FiestaShockCoolingModel
@@ -52,6 +58,21 @@ except ImportError:
 
 try:
     from survey_sim.fiesta_csm_model import FiestaCsmModel
+except ImportError:
+    pass
+
+try:
+    from survey_sim.fiesta_model import FiestaKNModel
+except ImportError:
+    pass
+
+try:
+    from survey_sim.fiesta_afterglow_model import FiestaAfterglowModel
+except ImportError:
+    pass
+
+try:
+    from survey_sim.salt3_model import FiestaSALT3Model
 except ImportError:
     pass
 
@@ -216,6 +237,9 @@ __all__ = [
     "FiestaShockCoolingModel",
     "FiestaCocoonModel",
     "FiestaCsmModel",
+    "FiestaKNModel",
+    "FiestaAfterglowModel",
+    "FiestaSALT3Model",
     "DetectionCriteria",
     "DetectionResult",
     "DetectedSource",
@@ -226,6 +250,10 @@ __all__ = [
     "run_too_simulation",
     "TdeRateForecast",
     "KilonovaImposterAnalysis",
+    "ZTF_BAND_MAP",
+    "LSST_BAND_MAP",
+    "SURVEY_BAND_MAPS",
+    "resolve_band_map",
     "blackbody_k_correction",
     "blackbody_k_correction_instrument",
 ]

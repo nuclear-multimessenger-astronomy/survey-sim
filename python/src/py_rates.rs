@@ -259,6 +259,58 @@ pub struct PyKilonovaImposterAnalysis {
 
 #[pymethods]
 impl PyKilonovaImposterAnalysis {
+    /// Construct imposter analysis using built-in survey presets (e.g. "ztf" or "lsst").
+    #[staticmethod]
+    #[pyo3(signature = (survey="ztf", volumetric_rate=45.0, signal_name="BNS Kilonova", default_sys_err=0.20, followup_budget=None))]
+    pub fn for_survey(
+        survey: &str,
+        volumetric_rate: f64,
+        signal_name: &str,
+        default_sys_err: f64,
+        followup_budget: Option<f64>,
+    ) -> PyResult<Self> {
+        let (vt, eff, imposters) = match survey.to_lowercase().as_str() {
+            "ztf" => {
+                let vt = 0.0032;
+                let eff = 0.00020;
+                let imp = vec![
+                    ("Type IIb Shock Cooling".to_string(), 0.5, Some(default_sys_err)),
+                    ("FBOT".to_string(), 0.2, Some(default_sys_err)),
+                    ("Shocked Cocoon".to_string(), 0.1, Some(default_sys_err)),
+                ];
+                (vt, eff, imp)
+            }
+            "lsst" | "rubin" => {
+                let vt = 0.411;
+                let eff = 0.00135;
+                let imp = vec![
+                    ("Type IIb Shock Cooling".to_string(), 60.0, Some(default_sys_err)),
+                    ("FBOT".to_string(), 15.0, Some(default_sys_err)),
+                    ("Shocked Cocoon".to_string(), 8.0, Some(default_sys_err)),
+                    ("Subluminous SN Iax".to_string(), 4.0, Some(default_sys_err)),
+                ];
+                (vt, eff, imp)
+            }
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Unknown survey preset '{}'. Use 'ztf' or 'lsst'/'rubin'.",
+                    other
+                )));
+            }
+        };
+
+        let expected_detections = volumetric_rate * vt;
+        Ok(Self::from_counts(
+            signal_name,
+            volumetric_rate,
+            expected_detections,
+            vt,
+            eff,
+            imposters,
+            followup_budget,
+        ))
+    }
+
     #[staticmethod]
     #[pyo3(signature = (
         signal_name,

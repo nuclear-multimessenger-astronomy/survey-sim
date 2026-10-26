@@ -182,35 +182,47 @@ Available radiation models: `sync`, `sync_smooth`, `sync_ssa`, `sync_ssa_smooth`
 
 Rust-native, fully parallel. Runs relativistic hydrodynamics + EATS afterglow computation per transient.
 
+### `FiestaKNModel`
+
+```python
+from survey_sim import FiestaKNModel
+
+FiestaKNModel(survey="ztf")   # defaults to ZTF filters ("ztfg", "ztfr", "ztfi")
+# or for Rubin LSST:
+FiestaKNModel(survey="lsst")  # LSST filters ("lsstu", "lsstg", ...)
+```
+
+Two-component kilonova neural network surrogate model via fiestaEM/JAX. Pass `survey="ztf"` or `survey="lsst"` to automatically configure instrument filter passbands.
+
 ### `FiestaShockCoolingModel`
 
 ```python
-from survey_sim.fiesta_shock_cooling_model import FiestaShockCoolingModel
+from survey_sim import FiestaShockCoolingModel
 
-FiestaShockCoolingModel(filters=["g", "r", "i"])
+FiestaShockCoolingModel(survey="ztf")  # automatically uses ZTF filters
 ```
 
-Analytical shock-cooling light-curve model implementing the Piro (2021) solution for Type IIb supernovae. Evaluated via Python callback or fiestaEM/JAX.
+Analytical shock-cooling light-curve model wrapping fiestaEM's `ShockCoolingModel` (Piro 2021) for Type IIb supernovae. Pass `survey="ztf"` or `survey="lsst"` to configure passbands.
 
 ### `FiestaCocoonModel`
 
 ```python
-from survey_sim.fiesta_cocoon_model import FiestaCocoonModel
+from survey_sim import FiestaCocoonModel
 
-FiestaCocoonModel(filters=["g", "r", "i"])
+FiestaCocoonModel(survey="ztf")
 ```
 
-Analytical model adapter for relativistic shocked cocoons (Piro & Kollmeier 2018; Gottlieb et al. 2018). Evaluated via Python callback or fiestaEM/JAX.
+Analytical model adapter for relativistic shocked cocoons (Nakar & Piran 2017; Gottlieb et al. 2018). Evaluated via fiestaEM/JAX.
 
 ### `FiestaCsmModel`
 
 ```python
-from survey_sim.fiesta_csm_model import FiestaCsmModel
+from survey_sim import FiestaCsmModel
 
-FiestaCsmModel(filters=["g", "r", "i"])
+FiestaCsmModel(survey="ztf")
 ```
 
-Analytical model adapter for dense circumstellar interaction transients (Chevalier & Irwin 2011; Chatzopoulos et al. 2012). Evaluated via Python callback or fiestaEM/JAX.
+Analytical model adapter for dense circumstellar interaction transients (Chatzopoulos et al. 2012; Moriya et al. 2013). Evaluated via fiestaEM/JAX.
 
 ### Python callback models
 
@@ -326,7 +338,16 @@ Analyzes sample purity, contamination, false discovery rate (FDR), effective (pu
 Construct from counts, from rate summaries, or directly from an end-to-end `SimulationResult`:
 
 ```python
-# 1. From an end-to-end multi-population SimulationResult:
+# 1. From a built-in survey preset ("ztf" or "lsst"):
+analysis = KilonovaImposterAnalysis.for_survey(
+    survey="ztf",
+    volumetric_rate=45.0,
+    signal_name="BNS Kilonova",
+    default_sys_err=0.20,
+    followup_budget=20.0,
+)
+
+# 2. From an end-to-end multi-population SimulationResult:
 analysis = KilonovaImposterAnalysis.from_simulation_result(
     result,
     signal_type="Kilonova",
@@ -334,14 +355,14 @@ analysis = KilonovaImposterAnalysis.from_simulation_result(
     followup_budget=25.0,
 )
 
-# 2. From a list of RateSummary objects:
+# 3. From a list of RateSummary objects:
 analysis = KilonovaImposterAnalysis.from_rate_summaries(
     result.rate_summaries,
     signal_type="Kilonova",
     default_sys_err=0.20,
 )
 
-# 3. From manual counts / forecasts:
+# 4. From manual counts / forecasts:
 analysis = KilonovaImposterAnalysis.from_counts(
     signal_name="BNS Kilonova",
     volumetric_rate=50.0,

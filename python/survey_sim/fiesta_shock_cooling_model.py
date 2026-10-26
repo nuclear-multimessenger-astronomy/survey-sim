@@ -13,15 +13,9 @@ except ImportError as err:
     ShockCoolingModel = None
     _FIESTA_IMPORT_ERROR = err
 
-# Band name mapping: survey-sim short names <-> sncosmo/fiesta filter names.
-_BAND_TO_FIESTA = {
-    "u": "lsstu",
-    "g": "lsstg",
-    "r": "lsstr",
-    "i": "lssti",
-    "z": "lsstz",
-    "y": "lssty",
-}
+from survey_sim.survey_config import ZTF_BAND_MAP, LSST_BAND_MAP, resolve_band_map
+
+_BAND_TO_FIESTA = LSST_BAND_MAP
 _FIESTA_TO_BAND = {v: k for k, v in _BAND_TO_FIESTA.items()}
 FIESTA_FILTERS = list(_BAND_TO_FIESTA.values())
 
@@ -34,21 +28,27 @@ class FiestaShockCoolingModel:
 
     Parameters
     ----------
+    survey : str, optional
+        Survey identifier (e.g. ``"ztf"`` or ``"lsst"``/``"rubin"``). Defaults to ``"ztf"``.
     filters : list[str] or None
-        List of filter names (e.g. ``["lsstg", "lsstr"]``).
-        Defaults to all six LSST bands.
+        List of filter names (e.g. ``["ztfg", "ztfr"]``).
+    band_map : dict[str, str] or None
+        Custom mapping from short band name to fiesta filter name.
     """
 
-    def __init__(self, filters=None):
+    def __init__(self, survey="ztf", filters=None, band_map=None):
         if ShockCoolingModel is None:
             raise ImportError(
                 "FiestaShockCoolingModel requires fiesta to be installed. "
                 f"Original import error: {_FIESTA_IMPORT_ERROR}"
             )
-        if filters is None:
-            filters = FIESTA_FILTERS
-        self.filters = filters
-        self.model = ShockCoolingModel(filters=filters)
+        self.band_map = resolve_band_map(
+            survey=survey, band_map=band_map, filters=filters, default_survey="ztf"
+        )
+        self.reverse_map = {v: k for k, v in self.band_map.items()}
+        fiesta_filters = list(self.band_map.values())
+        self.filters = fiesta_filters
+        self.model = ShockCoolingModel(filters=fiesta_filters)
 
     def predict(self, params):
         """Evaluate the shock-cooling model at observation times.
@@ -91,7 +91,7 @@ class FiestaShockCoolingModel:
         model_times = np.asarray(model_times, dtype=np.float64)
 
         result_mags = {}
-        for fiesta_filt, short_band in _FIESTA_TO_BAND.items():
+        for fiesta_filt, short_band in self.reverse_map.items():
             if fiesta_filt in model_mags:
                 grid_m = np.asarray(model_mags[fiesta_filt], dtype=np.float64)
                 interp_all = np.interp(obs_rest_days, model_times, grid_m, left=99.0, right=99.0)
