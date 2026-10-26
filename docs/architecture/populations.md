@@ -97,6 +97,21 @@ Type II supernovae with plateau characteristics.
 pop = SupernovaIIPopulation(rate=70000.0, z_max=0.5, peak_abs_mag=-17.0)
 ```
 
+### SupernovaIIbPopulation
+
+Type IIb supernovae with early shock-cooling optical/UV flash from stripped hydrogen envelopes (Piro 2021).
+
+| Parameter | Distribution | Range |
+|-----------|-------------|-------|
+| `log10_Menv` | Uniform | \([-2.0, -0.5]\) \(M_\odot\) |
+| `log10_Renv` | Uniform | \([1.48, 2.70]\) \(R_\odot\) |
+| `log10_Ee` | Gaussian | \(\mathcal{N}(51.0, 0.2)\) erg |
+| `peak_abs_mag` | Fixed / Default | \(-16.5\) mag |
+
+```python
+pop = SupernovaIIbPopulation(rate=1200.0, z_max=0.15, peak_abs_mag=-16.5)
+```
+
 ### TdePopulation
 
 Tidal disruption events.

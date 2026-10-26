@@ -91,6 +91,12 @@ SupernovaIaPopulation(rate=30000.0, z_max=1.0, peak_abs_mag=-19.3)
 SupernovaIIPopulation(rate=70000.0, z_max=0.5, peak_abs_mag=-17.0)
 ```
 
+### `SupernovaIIbPopulation`
+
+```python
+SupernovaIIbPopulation(rate=1200.0, z_max=0.15, peak_abs_mag=-16.5)
+```
+
 ### `TdePopulation`
 
 ```python
@@ -139,6 +145,16 @@ BlastwaveModel(radiation_model="sync_ssa_smooth", band_frequencies=None)
 Available radiation models: `sync`, `sync_smooth`, `sync_ssa`, `sync_ssa_smooth`, `sync_dnp`, `sync_ssc`.
 
 Rust-native, fully parallel. Runs relativistic hydrodynamics + EATS afterglow computation per transient.
+
+### `FiestaShockCoolingModel`
+
+```python
+from survey_sim.fiesta_shock_cooling_model import FiestaShockCoolingModel
+
+FiestaShockCoolingModel(filters=["g", "r", "i"])
+```
+
+Analytical shock-cooling light-curve model implementing the Piro (2021) solution for Type IIb supernovae. Evaluated via Python callback or fiestaEM/JAX.
 
 ### Python callback models
 

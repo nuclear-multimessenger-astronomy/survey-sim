@@ -11,6 +11,7 @@ from survey_sim.survey_sim import (
     FixedBu2026KilonovaPopulation,
     SupernovaIaPopulation,
     SupernovaIIPopulation,
+    SupernovaIIbPopulation,
     TdePopulation,
     FbotPopulation,
     GrbPopulation,
@@ -34,6 +35,11 @@ from survey_sim.survey_sim import (
     blackbody_k_correction,
     blackbody_k_correction_instrument,
 )
+
+try:
+    from survey_sim.fiesta_shock_cooling_model import FiestaShockCoolingModel
+except ImportError:
+    pass
 
 
 def _ensure_ztf_boom(start="201803", end="202603"):
@@ -181,6 +187,7 @@ __all__ = [
     "FixedBu2026KilonovaPopulation",
     "SupernovaIaPopulation",
     "SupernovaIIPopulation",
+    "SupernovaIIbPopulation",
     "TdePopulation",
     "FbotPopulation",
     "GrbPopulation",
@@ -189,6 +196,7 @@ __all__ = [
     "MetzgerKNModel",
     "BlastwaveModel",
     "ParametricModel",
+    "FiestaShockCoolingModel",
     "DetectionCriteria",
     "DetectionResult",
     "DetectedSource",

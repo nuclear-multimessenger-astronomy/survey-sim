@@ -46,6 +46,7 @@ fn default_model_for_type(
         TransientType::SupernovaIa => SviModelName::Bazin,
         TransientType::SupernovaII => SviModelName::Villar,
         TransientType::SupernovaIbc => SviModelName::Villar,
+        TransientType::SupernovaIIb => SviModelName::Villar,
         TransientType::Tde => SviModelName::Tde,
         TransientType::Fbot => SviModelName::Bazin,
         TransientType::Afterglow => SviModelName::Afterglow,

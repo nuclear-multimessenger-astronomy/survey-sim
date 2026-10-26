@@ -96,6 +96,8 @@ impl PySimulationPipeline {
                 rust_populations.push(Box::new(snia.to_generator(mjd_min, mjd_max)));
             } else if let Ok(snii) = pop_obj.extract::<PyRef<PySupernovaIIPopulation>>(py) {
                 rust_populations.push(Box::new(snii.to_generator(mjd_min, mjd_max)));
+            } else if let Ok(sniib) = pop_obj.extract::<PyRef<PySupernovaIIbPopulation>>(py) {
+                rust_populations.push(Box::new(sniib.to_generator(mjd_min, mjd_max)));
             } else if let Ok(tde) = pop_obj.extract::<PyRef<PyTdePopulation>>(py) {
                 rust_populations.push(Box::new(tde.to_generator(mjd_min, mjd_max)));
             } else if let Ok(fbot) = pop_obj.extract::<PyRef<PyFbotPopulation>>(py) {
