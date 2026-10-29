@@ -245,3 +245,105 @@ class FiestaKNModel:
             results.append((obs_times_list[i].tolist(), result_mags))
 
         return results
+
+    def batch_evaluate_arrays(self, redshifts, d_ls, peak_mags,
+                              param_names, param_arrays,
+                              obs_times_flat, obs_bands_flat, obs_counts,
+                              t_exps):
+        """Fast columnar batch evaluation — avoids per-transient Python dicts.
+
+        Called by PythonCallbackModel.batch_evaluate_columnar() on the Rust side.
+
+        Returns
+        -------
+        (obs_times_flat, {band: flat_mags}, obs_counts)
+        """
+        N = len(redshifts)
+        if N == 0:
+            return ([], {}, [])
+
+        redshifts = np.asarray(redshifts, dtype=np.float64)
+        d_ls = np.asarray(d_ls, dtype=np.float64)
+        t_exps = np.asarray(t_exps, dtype=np.float64)
+        obs_times_flat = np.asarray(obs_times_flat, dtype=np.float64)
+        obs_counts = np.asarray(obs_counts, dtype=np.int64)
+        param_names = list(param_names)
+        param_dict = {name: np.asarray(arr, dtype=np.float64) for name, arr in zip(param_names, param_arrays)}
+
+        # Vectorized parameter mapping
+        X_all = {}
+        for name in self.model.parameter_names:
+            if name in param_dict:
+                X_all[name] = jnp.array(param_dict[name], dtype=jnp.float32)
+            else:
+                X_all[name] = jnp.zeros(N, dtype=jnp.float32)
+        X_all["luminosity_distance"] = jnp.array(d_ls, dtype=jnp.float32)
+        X_all["redshift"] = jnp.array(redshifts, dtype=jnp.float32)
+
+        # GPU vmap call in chunks
+        CHUNK = 2048
+        time_chunks = []
+        mag_chunks = {filt: [] for filt in self.reverse_map}
+        for c0 in range(0, N, CHUNK):
+            c1 = min(c0 + CHUNK, N)
+            X_chunk = {k: v[c0:c1] for k, v in X_all.items()}
+            t_chunk, m_chunk = self.model.vpredict(X_chunk)
+            time_chunks.append(np.asarray(t_chunk, dtype=np.float64))
+            for filt in self.reverse_map:
+                if filt in m_chunk:
+                    mag_chunks[filt].append(np.asarray(m_chunk[filt], dtype=np.float64))
+
+        model_times_batch = np.concatenate(time_chunks, axis=0)  # (N, T)
+        del time_chunks
+        model_mags_np = {filt: np.concatenate(chunks, axis=0)
+                         for filt, chunks in mag_chunks.items() if chunks}
+        del mag_chunks, X_all
+
+        T = model_times_batch.shape[1]
+
+        # Build flat rest-frame times for all observations.
+        offsets = np.zeros(N + 1, dtype=np.int64)
+        np.cumsum(obs_counts, out=offsets[1:])
+        total_obs = int(offsets[-1])
+
+        trans_idx = np.repeat(np.arange(N), obs_counts)
+        z_per_obs = redshifts[trans_idx]
+        texp_per_obs = t_exps[trans_idx]
+        obs_rest_flat = (obs_times_flat - texp_per_obs) / (1.0 + z_per_obs)
+
+        t_min_per_obs = model_times_batch[trans_idx, 0]
+        t_max_per_obs = model_times_batch[trans_idx, -1]
+        t_upper_per_obs = np.minimum(t_max_per_obs, self.max_phase_days)
+        t_lower_per_obs = np.maximum(0.0, t_min_per_obs)
+        out_of_bounds_flat = (obs_rest_flat < t_lower_per_obs) | (obs_rest_flat > t_upper_per_obs)
+        obs_clamped = np.clip(obs_rest_flat, t_min_per_obs, t_max_per_obs)
+        del t_min_per_obs, t_max_per_obs, t_upper_per_obs, t_lower_per_obs
+
+        idx = np.empty(total_obs, dtype=np.int64)
+        for i in range(N):
+            s, e = offsets[i], offsets[i + 1]
+            if s < e:
+                idx[s:e] = np.clip(
+                    np.searchsorted(model_times_batch[i], obs_clamped[s:e]) - 1, 0, T - 2
+                )
+
+        idx1 = np.minimum(idx + 1, T - 1)
+
+        t0 = model_times_batch[trans_idx, idx]
+        t1 = model_times_batch[trans_idx, idx1]
+        dt = np.where((t1 - t0) == 0, 1.0, t1 - t0)
+        w = (obs_clamped - t0) / dt
+        del t0, t1, dt, obs_clamped
+
+        result_mags = {}
+        for fiesta_filt, short_band in self.reverse_map.items():
+            if fiesta_filt not in model_mags_np:
+                continue
+            m_grid = model_mags_np[fiesta_filt]
+            m0 = m_grid[trans_idx, idx]
+            m1 = m_grid[trans_idx, idx1]
+            interp_vals = m0 + w * (m1 - m0)
+            interp_vals = np.where(out_of_bounds_flat, 99.0, interp_vals)
+            result_mags[short_band] = interp_vals.tolist()
+
+        return (obs_times_flat.tolist(), result_mags, obs_counts.tolist())
