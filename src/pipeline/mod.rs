@@ -184,6 +184,10 @@ impl SimulationPipeline {
                 // Sequential for Python models (GIL constraint).
                 matched
                     .iter()
+                    .filter(|(inst_idx, obs_indices)| {
+                        let inst = &instances[*inst_idx];
+                        crate::detection::is_potentially_detectable(inst, obs_indices, &self.survey, &self.criteria)
+                    })
                     .filter_map(|(inst_idx, obs_indices)| {
                         let inst = &instances[*inst_idx];
                         let times: Vec<f64> = obs_indices
@@ -208,6 +212,10 @@ impl SimulationPipeline {
                 // Parallel for Rust-native models.
                 matched
                     .par_iter()
+                    .filter(|(inst_idx, obs_indices)| {
+                        let inst = &instances[*inst_idx];
+                        crate::detection::is_potentially_detectable(inst, obs_indices, &self.survey, &self.criteria)
+                    })
                     .filter_map(|(inst_idx, obs_indices)| {
                         let inst = &instances[*inst_idx];
                         let times: Vec<f64> = obs_indices
@@ -258,11 +266,11 @@ impl SimulationPipeline {
                 }
             }
 
-            // Also record unmatched transients as non-detections.
-            let matched_set: std::collections::HashSet<usize> =
-                matched.iter().map(|(i, _)| *i).collect();
+            // Also record un-evaluated transients (unmatched or pruned by detectability gate) as non-detections.
+            let evaluated_set: std::collections::HashSet<usize> =
+                detection_results.iter().map(|(i, _)| *i).collect();
             for i in 0..instances.len() {
-                if !matched_set.contains(&i) {
+                if !evaluated_set.contains(&i) {
                     let inst = &instances[i];
                     let mut vals = HashMap::new();
                     vals.insert("z".to_string(), inst.z);

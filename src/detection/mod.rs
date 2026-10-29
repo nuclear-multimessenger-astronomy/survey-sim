@@ -29,7 +29,8 @@ fn argus_depth_boost(n: usize) -> f64 {
     }
     TABLE[TABLE.len() - 1].1
 }
-use crate::survey::SurveyObservation;
+use crate::survey::{SurveyObservation, SurveyStore};
+use crate::types::{TransientInstance, TransientType};
 
 /// Criteria for determining whether a transient is detected.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -363,6 +364,127 @@ pub struct DetectionResult {
     pub phase_min_days: Option<f64>,
     /// Phase of latest detection relative to peak (days, positive = after peak).
     pub phase_max_days: Option<f64>,
+}
+
+impl DetectionResult {
+    /// Construct a default non-detection result.
+    pub fn non_detected() -> Self {
+        Self {
+            detected: false,
+            n_detections: 0,
+            n_detections_primary: 0,
+            n_bands_detected: 0,
+            first_detection_mjd: None,
+            last_detection_mjd: None,
+            detections_per_band: HashMap::new(),
+            best_rise_rate: None,
+            best_fade_rate: None,
+            is_fast_transient: false,
+            peak_mjd: None,
+            peak_mag: None,
+            n_pre_peak: 0,
+            n_post_peak: 0,
+            phase_min_days: None,
+            phase_max_days: None,
+        }
+    }
+}
+
+/// Conservative detectability gate check.
+///
+/// Returns `false` if the transient's theoretical peak brightness is strictly fainter
+/// than the deepest matched observation in the survey (taking into account secondary SNR
+/// thresholds, stacking boosts, and survey-specific sensitivity limits for e.g. ZTF vs LSST),
+/// or if there are fewer observations than `min_detections`.
+pub fn is_potentially_detectable(
+    instance: &TransientInstance,
+    obs_indices: &[usize],
+    survey: &SurveyStore,
+    criteria: &DetectionCriteria,
+) -> bool {
+    if obs_indices.len() < criteria.min_detections {
+        return false;
+    }
+
+    // Determine the deepest matched observation five-sigma depth.
+    let deepest_obs = obs_indices
+        .iter()
+        .map(|&oi| survey.get(oi).five_sigma_depth)
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    // Survey-aware depth discovery:
+    // If the observation depths are recorded, use the candidate's actual deepest matched exposure.
+    // If observation depths are unpopulated (<= 0), fallback to survey instrument nominal depth.
+    let is_lsst = if let Some(inst) = &survey.instrument {
+        let name = inst.name.to_lowercase();
+        name.contains("rubin") || name.contains("lsst")
+    } else {
+        survey.bands.iter().any(|b| {
+            let name = b.0.to_lowercase();
+            name == "u" || name == "y" || name == "z" || name.starts_with("lsst") || name.starts_with("rubin")
+        })
+    };
+
+    let survey_nominal_depth: f64 = if is_lsst {
+        25.0 // Rubin / LSST nominal 5-sigma single-visit depth (g-band)
+    } else {
+        20.8 // ZTF nominal 5-sigma single-visit depth (g-band)
+    };
+
+    let effective_depth = if deepest_obs > 0.0 && deepest_obs.is_finite() {
+        deepest_obs
+    } else if survey_nominal_depth > 0.0 && survey_nominal_depth.is_finite() {
+        survey_nominal_depth
+    } else {
+        return true;
+    };
+
+    // Forced photometry / secondary SNR margin:
+    // Allows detections down to SNR = 2.0 (or criteria secondary threshold)
+    let snr_sec: f64 = if criteria.snr_threshold_secondary > 0.0 {
+        criteria.snr_threshold.min(criteria.snr_threshold_secondary)
+    } else {
+        criteria.snr_threshold
+    };
+    let snr_eff = snr_sec.min(2.0); // forced photometry noise floor (SNR >= 2.0)
+    let snr_margin = 2.5 * (5.0f64 / snr_eff).log10(); // ~1.0 mag boost for SNR=2.0
+    let stack_margin = if !criteria.stack_windows_s.is_empty() { 3.0 } else { 0.0 };
+    let det_limit = effective_depth + snr_margin + stack_margin;
+
+    // Physically-tuned upper bound on peak absolute magnitude
+    // Kilonova: -17.0 mag (AT2017gfo was -16.0; numerical relativity grids bound max kilonova at ~ -16.8)
+    // SNe Ia: -20.5 mag (normal SNe Ia are -19.3)
+    let m_peak_bound = if instance.peak_abs_mag < -5.0 {
+        instance.peak_abs_mag - 1.0
+    } else {
+        match instance.transient_type {
+            TransientType::Kilonova => -17.0,
+            TransientType::SupernovaIa => -20.5,
+            TransientType::SupernovaII
+            | TransientType::SupernovaIbc
+            | TransientType::SupernovaIIb
+            | TransientType::SupernovaIax => -19.5,
+            TransientType::Tde => -22.5,
+            TransientType::Fbot => -22.0,
+            TransientType::Afterglow => -26.0,
+            TransientType::ShockedCocoon => -20.0,
+            TransientType::CsmInteraction => -22.0,
+            TransientType::Custom => -22.0,
+        }
+    };
+
+    let dist_mod = if instance.d_l > 0.0 {
+        let d_l_pc = instance.d_l * 1e6;
+        5.0 * (d_l_pc / 10.0).log10()
+    } else {
+        0.0
+    };
+
+    // The brightest possible apparent magnitude occurs under zero line-of-sight dust extinction.
+    // Setting extinction to zero guarantees safety even in red/infrared bands (e.g. LSST y/z)
+    // where dust attenuation is much lower than in optical bands.
+    let m_brightest = m_peak_bound + dist_mod;
+    m_brightest <= det_limit
 }
 
 /// Evaluate detection for a transient given its lightcurve and overlapping observations.
@@ -855,7 +977,8 @@ fn evaluate_detection_slice(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::survey::SurveyObservation;
+    use crate::survey::{SurveyObservation, SurveyStore};
+use crate::types::{TransientInstance, TransientType};
     use crate::types::{Band, SkyCoord};
 
     fn make_obs(mjd: f64, band: &str, depth: f64) -> SurveyObservation {
