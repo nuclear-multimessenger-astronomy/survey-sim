@@ -20,3 +20,4 @@ __pycache__/
 *.so
 *.pyc
 .skysurvey_ref/
+tests_notebooks/

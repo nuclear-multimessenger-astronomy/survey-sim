@@ -38,14 +38,15 @@ class FiestaSALT3Model:
         Rest-frame time grid in days since peak. Default: -20 to +50, 200 points.
     """
 
-    def __init__(self, filters=None, band_map=None, times_grid=None, max_phase_days=70.0):
-        if band_map is None:
-            band_map = ZTF_SALT3_BANDS
+    def __init__(self, survey="ztf", filters=None, band_map=None, times_grid=None, max_phase_days=70.0):
+        from survey_sim.survey_config import resolve_band_map
+        band_map = resolve_band_map(survey=survey, band_map=band_map, filters=filters, default_survey="ztf")
         if filters is None:
             filters = list(band_map.keys())
         self.band_map = band_map
         self.survey_filters = filters
         self.salt3_filters = [band_map[f] for f in filters]
+        self.max_phase_days = float(max_phase_days)
         self.max_phase_days = float(max_phase_days)
 
         # Register any missing bandpasses from sncosmo

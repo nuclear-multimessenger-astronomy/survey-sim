@@ -1,6 +1,9 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
+use survey_sim::efficiency::imposters::{
+    ImposterPopulation, KilonovaImposterAnalysis, KilonovaSignal,
+};
 use survey_sim::efficiency::tde::{
     compute_tde_rate, BhmfModel, TdeLuminosityFunction, TdeRateSurvey,
 };
@@ -245,8 +248,324 @@ fn builtin_survey(name: &str) -> Option<TdeRateSurvey> {
     }
 }
 
+
+/// Python wrapper for Kilonova Imposter and Detection Efficiency Analysis.
+#[pyclass]
+#[pyo3(name = "KilonovaImposterAnalysis")]
+#[derive(Clone)]
+pub struct PyKilonovaImposterAnalysis {
+    pub(crate) inner: KilonovaImposterAnalysis,
+}
+
+#[pymethods]
+impl PyKilonovaImposterAnalysis {
+    /// Construct imposter analysis using built-in survey presets (e.g. "ztf" or "lsst").
+    #[staticmethod]
+    #[pyo3(signature = (survey="ztf", volumetric_rate=45.0, signal_name="BNS Kilonova", default_sys_err=0.20, followup_budget=None))]
+    pub fn for_survey(
+        survey: &str,
+        volumetric_rate: f64,
+        signal_name: &str,
+        default_sys_err: f64,
+        followup_budget: Option<f64>,
+    ) -> PyResult<Self> {
+        let (vt, eff, imposters) = match survey.to_lowercase().as_str() {
+            "ztf" => {
+                let vt = 0.0032;
+                let eff = 0.00020;
+                let imp = vec![
+                    ("Type IIb Shock Cooling".to_string(), 0.5, Some(default_sys_err)),
+                    ("FBOT".to_string(), 0.2, Some(default_sys_err)),
+                    ("Shocked Cocoon".to_string(), 0.1, Some(default_sys_err)),
+                ];
+                (vt, eff, imp)
+            }
+            "lsst" | "rubin" => {
+                let vt = 0.411;
+                let eff = 0.00135;
+                let imp = vec![
+                    ("Type IIb Shock Cooling".to_string(), 60.0, Some(default_sys_err)),
+                    ("FBOT".to_string(), 15.0, Some(default_sys_err)),
+                    ("Shocked Cocoon".to_string(), 8.0, Some(default_sys_err)),
+                    ("Subluminous SN Iax".to_string(), 4.0, Some(default_sys_err)),
+                ];
+                (vt, eff, imp)
+            }
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Unknown survey preset '{}'. Use 'ztf' or 'lsst'/'rubin'.",
+                    other
+                )));
+            }
+        };
+
+        let expected_detections = volumetric_rate * vt;
+        Ok(Self::from_counts(
+            signal_name,
+            volumetric_rate,
+            expected_detections,
+            vt,
+            eff,
+            imposters,
+            followup_budget,
+        ))
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (
+        signal_name,
+        volumetric_rate,
+        expected_detections,
+        effective_vt,
+        overall_efficiency,
+        imposters,
+        followup_budget=None
+    ))]
+    pub fn from_counts(
+        signal_name: &str,
+        volumetric_rate: f64,
+        expected_detections: f64,
+        effective_vt: f64,
+        overall_efficiency: f64,
+        imposters: Vec<(String, f64, Option<f64>)>,
+        followup_budget: Option<f64>,
+    ) -> Self {
+        let kn = KilonovaSignal::new(
+            signal_name,
+            volumetric_rate,
+            expected_detections,
+            effective_vt,
+            overall_efficiency,
+        );
+
+        let imp_pops: Vec<ImposterPopulation> = imposters
+            .into_iter()
+            .map(|(name, count, sys_err)| {
+                ImposterPopulation::from_count(&name, count, sys_err.unwrap_or(0.20))
+            })
+            .collect();
+
+        let mut analysis = KilonovaImposterAnalysis::new(kn, imp_pops);
+        if let Some(budget) = followup_budget {
+            analysis = analysis.with_followup_budget(budget);
+        }
+
+        Self { inner: analysis }
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (result, signal_type="Kilonova", default_sys_err=0.20, followup_budget=None))]
+    pub fn from_simulation_result(
+        result: &crate::py_pipeline::PySimulationResult,
+        signal_type: &str,
+        default_sys_err: f64,
+        followup_budget: Option<f64>,
+    ) -> PyResult<Self> {
+        result.analyze_imposters(signal_type, default_sys_err, followup_budget)
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (rate_summaries, signal_type="Kilonova", default_sys_err=0.20, followup_budget=None))]
+    pub fn from_rate_summaries(
+        rate_summaries: Vec<crate::py_pipeline::PyRateSummary>,
+        signal_type: &str,
+        default_sys_err: f64,
+        followup_budget: Option<f64>,
+    ) -> PyResult<Self> {
+        let signal_summary = rate_summaries
+            .iter()
+            .find(|rs| rs.transient_type == signal_type)
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "Signal transient type '{}' not found in rate summaries",
+                    signal_type
+                ))
+            })?;
+
+        let imposter_summaries: Vec<crate::py_pipeline::PyRateSummary> = rate_summaries
+            .iter()
+            .filter(|rs| rs.transient_type != signal_type)
+            .cloned()
+            .collect();
+
+        signal_summary.analyze_imposters(None, Some(imposter_summaries), default_sys_err, followup_budget)
+    }
+
+    #[getter]
+    pub fn signal_name(&self) -> String {
+        self.inner.kilonova.name.clone()
+    }
+
+    #[getter]
+    pub fn signal_detections(&self) -> f64 {
+        self.inner.metrics.signal_detections
+    }
+
+    #[getter]
+    pub fn total_imposters(&self) -> f64 {
+        self.inner.metrics.total_imposters
+    }
+
+    #[getter]
+    pub fn total_candidates(&self) -> f64 {
+        self.inner.metrics.total_detections
+    }
+
+    #[getter]
+    pub fn imposter_to_signal_ratio(&self) -> f64 {
+        self.inner.metrics.imposter_to_signal_ratio
+    }
+
+    #[getter]
+    pub fn purity(&self) -> f64 {
+        self.inner.metrics.purity
+    }
+
+    #[getter]
+    pub fn false_discovery_rate(&self) -> f64 {
+        self.inner.metrics.false_discovery_rate
+    }
+
+    #[getter]
+    pub fn pure_efficiency(&self) -> f64 {
+        self.inner.metrics.pure_efficiency
+    }
+
+    #[getter]
+    pub fn raw_efficiency(&self) -> f64 {
+        self.inner.kilonova.overall_efficiency
+    }
+
+    #[getter]
+    pub fn f1_score(&self) -> f64 {
+        self.inner.metrics.f1_score
+    }
+
+    pub fn f_beta(&self, beta: f64) -> f64 {
+        self.inner.metrics.f_beta(beta)
+    }
+
+    #[getter]
+    pub fn significance_fom(&self) -> f64 {
+        self.inner.metrics.significance_fom
+    }
+
+    #[getter]
+    pub fn naive_recovered_rate(&self) -> f64 {
+        self.inner.rate_recovery.naive_recovered_rate
+    }
+
+    #[getter]
+    pub fn rate_bias_absolute(&self) -> f64 {
+        self.inner.rate_recovery.rate_bias_absolute
+    }
+
+    #[getter]
+    pub fn rate_bias_fractional(&self) -> f64 {
+        self.inner.rate_recovery.rate_bias_fractional
+    }
+
+    #[getter]
+    pub fn naive_poisson_1sig_interval(&self) -> (f64, f64) {
+        self.inner.rate_recovery.naive_poisson_1sig_interval
+    }
+
+    #[getter]
+    pub fn decontaminated_recovered_rate(&self) -> f64 {
+        self.inner.rate_recovery.decontaminated_recovered_rate
+    }
+
+    #[getter]
+    pub fn decontaminated_1sig_interval(&self) -> (f64, f64) {
+        self.inner.rate_recovery.decontaminated_1sig_interval
+    }
+
+    #[getter]
+    pub fn decontaminated_2sig_interval(&self) -> (f64, f64) {
+        self.inner.rate_recovery.decontaminated_2sig_interval
+    }
+
+    #[getter]
+    pub fn variance_inflation_factor(&self) -> f64 {
+        self.inner.rate_recovery.variance_inflation_factor
+    }
+
+    #[getter]
+    pub fn uncertainty_inflation_factor(&self) -> f64 {
+        self.inner.rate_recovery.uncertainty_inflation_factor
+    }
+
+    #[getter]
+    pub fn consistent_1sig(&self) -> bool {
+        self.inner.rate_recovery.consistent_1sig
+    }
+
+    #[getter]
+    pub fn consistent_2sig(&self) -> bool {
+        self.inner.rate_recovery.consistent_2sig
+    }
+
+    #[getter]
+    pub fn imposter_breakdown(&self) -> Vec<(String, f64)> {
+        self.inner.metrics.imposter_breakdown.clone()
+    }
+
+    pub fn with_followup_budget(&self, budget: f64) -> Self {
+        Self {
+            inner: self.inner.clone().with_followup_budget(budget),
+        }
+    }
+
+    #[getter]
+    pub fn followup_metrics<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        if let Some(ref fb) = self.inner.followup_budget {
+            let dict = PyDict::new(py);
+            dict.set_item("budget", fb.budget)?;
+            dict.set_item("total_candidates", fb.total_candidates)?;
+            dict.set_item("allocation_fraction", fb.allocation_fraction)?;
+            dict.set_item("expected_confirmed_kn", fb.expected_confirmed_kn)?;
+            dict.set_item("confirmed_efficiency", fb.confirmed_efficiency)?;
+            dict.set_item("wasted_imposter_followups", fb.wasted_imposter_followups)?;
+            dict.set_item("is_budget_exceeded", fb.is_budget_exceeded)?;
+            Ok(Some(dict))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        dict.set_item("signal_name", self.inner.kilonova.name.clone())?;
+        dict.set_item("signal_rate", self.inner.kilonova.volumetric_rate)?;
+        dict.set_item("effective_vt", self.inner.kilonova.effective_vt)?;
+        dict.set_item("signal_detections", self.inner.metrics.signal_detections)?;
+        dict.set_item("total_imposters", self.inner.metrics.total_imposters)?;
+        dict.set_item("total_candidates", self.inner.metrics.total_detections)?;
+        dict.set_item("imposter_to_signal_ratio", self.inner.metrics.imposter_to_signal_ratio)?;
+        dict.set_item("purity", self.inner.metrics.purity)?;
+        dict.set_item("false_discovery_rate", self.inner.metrics.false_discovery_rate)?;
+        dict.set_item("raw_efficiency", self.inner.kilonova.overall_efficiency)?;
+        dict.set_item("pure_efficiency", self.inner.metrics.pure_efficiency)?;
+        dict.set_item("f1_score", self.inner.metrics.f1_score)?;
+        dict.set_item("significance_fom", self.inner.metrics.significance_fom)?;
+        dict.set_item("naive_recovered_rate", self.inner.rate_recovery.naive_recovered_rate)?;
+        dict.set_item("rate_bias_absolute", self.inner.rate_recovery.rate_bias_absolute)?;
+        dict.set_item("rate_bias_fractional", self.inner.rate_recovery.rate_bias_fractional)?;
+        dict.set_item("decontaminated_rate", self.inner.rate_recovery.decontaminated_recovered_rate)?;
+        dict.set_item("variance_inflation_factor", self.inner.rate_recovery.variance_inflation_factor)?;
+        dict.set_item("uncertainty_inflation_factor", self.inner.rate_recovery.uncertainty_inflation_factor)?;
+        dict.set_item("consistent_2sig", self.inner.rate_recovery.consistent_2sig)?;
+        Ok(dict)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("{}", self.inner)
+    }
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTdeRateForecast>()?;
+    m.add_class::<PyKilonovaImposterAnalysis>()?;
     m.add_function(wrap_pyfunction!(blackbody_k_correction, m)?)?;
     m.add_function(wrap_pyfunction!(blackbody_k_correction_instrument, m)?)?;
     Ok(())

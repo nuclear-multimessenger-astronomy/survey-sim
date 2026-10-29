@@ -68,3 +68,30 @@ The all-sky detection rate is then:
 \]
 
 where \(\mathcal{R}\) is the volumetric rate (Gpc\(^{-3}\) yr\(^{-1}\)), \(\Omega_\mathrm{survey}\) is the survey solid angle, and the \(1/(1+z)\) factor accounts for cosmological time dilation.
+
+## Multi-Population Simulations & Imposter Analysis
+
+The pipeline supports simulating multiple distinct transient populations simultaneously:
+
+```python
+pipeline = SimulationPipeline(
+    survey=survey,
+    populations=[kn_pop, sn_iib_pop, fbot_pop],
+    models={"Kilonova": kn_model, "SupernovaIIb": sn_model, "FBOT": fbot_model},
+    detection=criteria,
+    n_transients=10000,
+)
+result = pipeline.run()
+```
+
+Each population is tracked independently, yielding per-population detection efficiencies and `RateSummary` objects. Cross-population contamination and decontaminated rate recovery can be analyzed directly on the `SimulationResult`:
+
+```python
+analysis = result.analyze_imposters(
+    signal_type="Kilonova",
+    default_sys_err=0.20,
+    followup_budget=25.0,
+)
+```
+
+This calculates candidate sample purity, false discovery rate (FDR), naive rate recovery bias, and background-subtracted decontaminated rate recovery with variance inflation factors (VIF). See the [Kilonova Imposters Example](../examples/kilonova_imposters.md) for full details.
