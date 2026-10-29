@@ -12,7 +12,7 @@ pub mod survey;
 pub mod types;
 
 pub use config::SimulationConfig;
-pub use detection::{DetectionCriteria, DetectionResult};
+pub use detection::{DetectionCriteria, DetectionResult, is_potentially_detectable};
 pub use instrument::InstrumentConfig;
 pub use lightcurve::{LightcurveEvaluation, LightcurveModel};
 pub use pipeline::{SimulationPipeline, SimulationResult};

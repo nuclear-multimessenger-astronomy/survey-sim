@@ -366,17 +366,30 @@ fn run_pipeline_borrowed(
             t_phase1.elapsed().as_secs_f64(), matched.len(), instances.len());
         let t_phase2 = Instant::now();
 
+        // Pre-filter matched transients with detectability gate unless saving undetected photometry
+        let surviving_matched: Vec<&(usize, Vec<usize>)> = if !include_undetected {
+            matched
+                .iter()
+                .filter(|(idx, obs_indices)| {
+                    let inst = &instances[*idx];
+                    survey_sim::detection::is_potentially_detectable(inst, obs_indices, survey, criteria)
+                })
+                .collect()
+        } else {
+            matched.iter().collect()
+        };
+
         // Phase 2: Lightcurve evaluation.
         let evaluations: Vec<(usize, Vec<usize>, survey_sim::lightcurve::LightcurveEvaluation)> =
             if model.supports_batch() {
                 // GPU-batched path: collect all instances, evaluate in one call.
                 let batch_instances: Vec<&survey_sim::types::TransientInstance> =
-                    matched.iter().map(|(idx, _)| &instances[*idx]).collect();
-                let batch_times: Vec<Vec<f64>> = matched
+                    surviving_matched.iter().map(|(idx, _)| &instances[*idx]).collect();
+                let batch_times: Vec<Vec<f64>> = surviving_matched
                     .iter()
                     .map(|(_, obs_indices)| obs_indices.iter().map(|&oi| survey.get(oi).mjd).collect())
                     .collect();
-                let batch_bands: Vec<Vec<survey_sim::types::Band>> = matched
+                let batch_bands: Vec<Vec<survey_sim::types::Band>> = surviving_matched
                     .iter()
                     .map(|(_, obs_indices)| obs_indices.iter().map(|&oi| survey.get(oi).band.clone()).collect())
                     .collect();
@@ -385,16 +398,16 @@ fn run_pipeline_borrowed(
 
                 let results = model.batch_evaluate(&batch_instances, &times_refs, &bands_refs);
 
-                matched
+                surviving_matched
                     .iter()
                     .zip(results.into_iter())
                     .filter_map(|((idx, obs_indices), result)| {
-                        result.ok().map(|eval| (*idx, obs_indices.clone(), eval))
+                        result.ok().map(|eval| (*idx, (*obs_indices).clone(), eval))
                     })
                     .collect()
             } else if model.requires_gil() {
                 // Sequential GIL path: one transient at a time.
-                matched
+                surviving_matched
                     .iter()
                     .filter_map(|(idx, obs_indices)| {
                         let inst = &instances[*idx];
@@ -402,12 +415,12 @@ fn run_pipeline_borrowed(
                             obs_indices.iter().map(|&oi| survey.get(oi).mjd).collect();
                         let bands: Vec<_> =
                             obs_indices.iter().map(|&oi| survey.get(oi).band.clone()).collect();
-                        model.evaluate(inst, &times, &bands).ok().map(|eval| (*idx, obs_indices.clone(), eval))
+                        model.evaluate(inst, &times, &bands).ok().map(|eval| (*idx, (*obs_indices).clone(), eval))
                     })
                     .collect()
             } else {
                 // Rayon-parallel path for pure Rust models.
-                matched
+                surviving_matched
                     .par_iter()
                     .filter_map(|(idx, obs_indices)| {
                         let inst = &instances[*idx];
@@ -415,7 +428,7 @@ fn run_pipeline_borrowed(
                             obs_indices.iter().map(|&oi| survey.get(oi).mjd).collect();
                         let bands: Vec<_> =
                             obs_indices.iter().map(|&oi| survey.get(oi).band.clone()).collect();
-                        model.evaluate(inst, &times, &bands).ok().map(|eval| (*idx, obs_indices.clone(), eval))
+                        model.evaluate(inst, &times, &bands).ok().map(|eval| (*idx, (*obs_indices).clone(), eval))
                     })
                     .collect()
             };

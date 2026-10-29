@@ -10,7 +10,7 @@ use crate::efficiency::{EfficiencyGrid, GridAxis};
 use crate::lightcurve::{LightcurveEvaluation, LightcurveModel};
 use crate::population::PopulationGenerator;
 use crate::survey::{SurveyObservation, SurveyStore};
-use crate::types::{Cosmology, TransientInstance};
+use crate::types::{Band, Cosmology, TransientInstance};
 
 /// End-to-end simulation pipeline.
 pub struct SimulationPipeline {
@@ -178,12 +178,17 @@ impl SimulationPipeline {
                 instances.len()
             );
 
-            // Phase 2: Lightcurve evaluation.
-            log::info!("Phase 2: Lightcurve evaluation...");
-            let evaluations: Vec<(usize, Vec<usize>, LightcurveEvaluation)> = if uses_python {
+            // Phase 2 & 3: Lightcurve and detection evaluation.
+            log::info!("Phase 2 & 3: Lightcurve evaluation & detection...");
+            let criteria = &self.criteria;
+            let detection_results: Vec<(usize, DetectionResult)> = if uses_python {
                 // Sequential for Python models (GIL constraint).
-                matched
+                let evaluations: Vec<(usize, Vec<usize>, LightcurveEvaluation)> = matched
                     .iter()
+                    .filter(|(inst_idx, obs_indices)| {
+                        let inst = &instances[*inst_idx];
+                        crate::detection::is_potentially_detectable(inst, obs_indices, &self.survey, criteria)
+                    })
                     .filter_map(|(inst_idx, obs_indices)| {
                         let inst = &instances[*inst_idx];
                         let times: Vec<f64> = obs_indices
@@ -203,24 +208,44 @@ impl SimulationPipeline {
                             }
                         }
                     })
+                    .collect();
+
+                evaluations
+                    .into_iter()
+                    .map(|(inst_idx, obs_indices, eval)| {
+                        let obs_refs: Vec<&SurveyObservation> = obs_indices
+                            .iter()
+                            .map(|&oi| self.survey.get(oi))
+                            .collect();
+                        let t_exp = instances[inst_idx].t_exp;
+                        let result = evaluate_detection_with_t0(&eval, &obs_refs, criteria, Some(t_exp));
+                        (inst_idx, result)
+                    })
                     .collect()
             } else {
-                // Parallel for Rust-native models.
+                // Fused parallel path for Rust-native models:
+                // Evaluates lightcurve and detection together per candidate without materializing
+                // an intermediate multi-gigabyte vector of LightcurveEvaluation objects in memory.
                 matched
                     .par_iter()
+                    .filter(|(inst_idx, obs_indices)| {
+                        let inst = &instances[*inst_idx];
+                        crate::detection::is_potentially_detectable(inst, obs_indices, &self.survey, criteria)
+                    })
                     .filter_map(|(inst_idx, obs_indices)| {
                         let inst = &instances[*inst_idx];
-                        let times: Vec<f64> = obs_indices
+                        let obs_refs: Vec<&SurveyObservation> = obs_indices
                             .iter()
-                            .map(|&oi| self.survey.get(oi).mjd)
+                            .map(|&oi| self.survey.get(oi))
                             .collect();
-                        let bands: Vec<_> = obs_indices
-                            .iter()
-                            .map(|&oi| self.survey.get(oi).band.clone())
-                            .collect();
+                        let times: Vec<f64> = obs_refs.iter().map(|o| o.mjd).collect();
+                        let bands: Vec<Band> = obs_refs.iter().map(|o| o.band.clone()).collect();
 
                         match model.evaluate(inst, &times, &bands) {
-                            Ok(eval) => Some((*inst_idx, obs_indices.clone(), eval)),
+                            Ok(eval) => {
+                                let result = evaluate_detection_with_t0(&eval, &obs_refs, criteria, Some(inst.t_exp));
+                                Some((*inst_idx, result))
+                            }
                             Err(e) => {
                                 log::debug!("Lightcurve eval failed for instance {}: {}", inst_idx, e);
                                 None
@@ -229,22 +254,6 @@ impl SimulationPipeline {
                     })
                     .collect()
             };
-
-            // Phase 3: Detection evaluation (parallel).
-            log::info!("Phase 3: Detection evaluation...");
-            let criteria = &self.criteria;
-            let detection_results: Vec<(usize, DetectionResult)> = evaluations
-                .par_iter()
-                .map(|(inst_idx, obs_indices, eval)| {
-                    let obs_refs: Vec<&SurveyObservation> = obs_indices
-                        .iter()
-                        .map(|&oi| self.survey.get(oi))
-                        .collect();
-                    let t_exp = instances[*inst_idx].t_exp;
-                    let result = evaluate_detection_with_t0(eval, &obs_refs, criteria, Some(t_exp));
-                    (*inst_idx, result)
-                })
-                .collect();
 
             // Accumulate into efficiency grid.
             let mut n_detected = 0usize;
@@ -258,11 +267,11 @@ impl SimulationPipeline {
                 }
             }
 
-            // Also record unmatched transients as non-detections.
-            let matched_set: std::collections::HashSet<usize> =
-                matched.iter().map(|(i, _)| *i).collect();
+            // Also record un-evaluated transients (unmatched or pruned by detectability gate) as non-detections.
+            let evaluated_set: std::collections::HashSet<usize> =
+                detection_results.iter().map(|(i, _)| *i).collect();
             for i in 0..instances.len() {
-                if !matched_set.contains(&i) {
+                if !evaluated_set.contains(&i) {
                     let inst = &instances[i];
                     let mut vals = HashMap::new();
                     vals.insert("z".to_string(), inst.z);

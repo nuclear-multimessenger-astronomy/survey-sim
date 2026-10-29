@@ -166,11 +166,17 @@ impl LightcurveModel for ParametricModel {
         };
         let k_corr = k_correction_bolometric(instance.z);
 
-        let mut apparent_mags = HashMap::new();
-        for band in bands {
-            let mw_ext = extinction_in_band(instance.mw_extinction_av, &band.0);
-            let host_ext = extinction_in_band(instance.host_extinction_av, &band.0);
-            let color_offset = self.color_offsets.get(&band.0).copied().unwrap_or(0.0);
+        let mut seen_bands = std::collections::HashSet::new();
+        let unique_bands: Vec<&str> = bands
+            .iter()
+            .filter_map(|b| if seen_bands.insert(b.0.as_str()) { Some(b.0.as_str()) } else { None })
+            .collect();
+
+        let mut apparent_mags = HashMap::with_capacity(unique_bands.len());
+        for band_name in unique_bands {
+            let mw_ext = extinction_in_band(instance.mw_extinction_av, band_name);
+            let host_ext = extinction_in_band(instance.host_extinction_av, band_name);
+            let color_offset = self.color_offsets.get(band_name).copied().unwrap_or(0.0);
 
             let mags: Vec<f64> = norm_flux
                 .iter()
@@ -184,7 +190,7 @@ impl LightcurveModel for ParametricModel {
                 })
                 .collect();
 
-            apparent_mags.insert(band.0.clone(), mags);
+            apparent_mags.insert(band_name.to_string(), mags);
         }
 
         Ok(LightcurveEvaluation {
@@ -243,10 +249,9 @@ impl ParametricModel {
 
         let mag_map = lightcurve_fitting::metzger_kn_mags(params, rest_times, &band_freqs, d_l_cm);
 
-        // Apply extinction to the raw AB mags
-        let mut apparent_mags = HashMap::new();
-        for band in bands {
-            let band_name = &band.0;
+        // Apply extinction to the raw AB mags for unique bands
+        let mut apparent_mags = HashMap::with_capacity(unique_bands.len());
+        for band_name in &unique_bands {
             if let Some(raw_mags) = mag_map.get(band_name) {
                 let mw_ext = extinction_in_band(instance.mw_extinction_av, band_name);
                 let host_ext = extinction_in_band(instance.host_extinction_av, band_name);
